@@ -12,7 +12,7 @@ authors = ["Ely Erin Fox"]
 description = "An Apple ProRes decoder and encoder in Rust, written from SMPTE RDD 36: no C, no system libraries, no build script. Every profile decodes (Proxy to 4444 XQ, 4:2:2 and 4:4:4, progressive and interlaced, alpha); the encoder writes the 4:2:2 profiles and 4444 to a target bit rate. rivet's ProRes codec. Imported as `prores`."
 keywords = ["prores", "video", "decoder", "encoder", "codec"]
 categories = ["multimedia::video", "multimedia::encoding"]
-exclude = [".github/", "docs/"]
+exclude = [".github/"]
 
 [lib]
 name = "prores"

@@ -8,7 +8,8 @@
 //! slice's share in proportion to its macroblocks), and each slice takes the
 //! finest quantiser that fits its share. The frame therefore never exceeds
 //! its target unless even the coarsest quantiser (224) cannot reach it, and
-//! the quality across a picture stays nearly uniform.
+//! the quality across a picture stays nearly uniform. Alpha, which is
+//! lossless, is coded on top of the target.
 
 use crate::bits::{BitCounter, BitSink, BitWriter};
 use crate::decode::block_position;

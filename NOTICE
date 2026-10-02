@@ -1,0 +1,42 @@
+rivet-prores — an Apple ProRes decoder and encoder
+Copyright 2026 Ely Erin Fox
+
+This product is licensed under the Open Encoding Attribution License,
+Version 1.0 (see LICENSE.md). It is source-available, not open source: the
+attribution duty in §5 applies to commercial use; §4 requires this NOTICE to
+be carried forward with any distribution.
+
+------------------------------------------------------------------------------
+Provenance
+------------------------------------------------------------------------------
+
+The decoder and encoder are original implementations written from SMPTE
+RDD 36:2022, "Apple ProRes Bitstream Syntax and Decoding Process", the
+registered disclosure document Apple contributed to SMPTE, which SMPTE
+publishes free of charge (https://pub.smpte.org/doc/rdd36/). They are not
+translations of, and do not derive from, any other ProRes encoder's or
+decoder's source: no other implementation's code was read or consulted, and
+none was run to make or check anything here. The tables (codebook choices,
+scan orders, quantiser scale) are reproduced from RDD 36. The encoder's
+target bit rates are Apple's published figures for each profile.
+
+The tests check the decoder against frames assembled by hand from RDD 36's
+syntax tables, the encoder and decoder against each other, and, optionally,
+the decoder against frames Apple's encoder wrote: Probe.dev's public sample
+AppleProRes422.mov, which is fetched by CI and not included here.
+
+------------------------------------------------------------------------------
+Trademarks and patents
+------------------------------------------------------------------------------
+
+Apple and ProRes are trademarks of Apple Inc. This project is not affiliated
+with or endorsed by Apple. Apple runs a licensing programme for ProRes
+products; this licence grants no rights under any Apple patent or trademark,
+and the authors make no claim about whether a licence is needed for any use.
+
+------------------------------------------------------------------------------
+Third-party components
+------------------------------------------------------------------------------
+
+thiserror (https://crates.io/crates/thiserror) — MIT OR Apache-2.0
+proptest (https://crates.io/crates/proptest), development dependency only — MIT OR Apache-2.0

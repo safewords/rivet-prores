@@ -328,7 +328,7 @@ fn extremes_clip_instead_of_wrapping() {
     for plane in 0..3 {
         let w = frame.planes[plane].width as usize;
         for (i, s) in frame.plane_mut(plane).iter_mut().enumerate() {
-            *s = if (i % w) / 3 % 2 == 0 { 0 } else { 1023 };
+            *s = if ((i % w) / 3).is_multiple_of(2) { 0 } else { 1023 };
         }
     }
     let (_, decoded) = round_trip(&frame, Config::new(Profile::Proxy));

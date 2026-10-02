@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: tests (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux x86-64,   os: ubuntu-latest }
+          - { name: linux arm64,    os: ubuntu-24.04-arm }
+          - { name: windows x86-64, os: windows-latest }
+          - { name: macos arm64,    os: macos-latest }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests
+        run: cargo test --release
+      - name: Property tests with overflow checks (debug)
+        run: cargo test --test fuzz
+
+  # The decoder on frames Apple's encoder wrote: the first 4 MB of a public
+  # sample (eleven whole frames), fetched here rather than committed. The
+  # test skips without PRORES_SAMPLE, so this job is what makes it run.
+  sample:
+    name: Apple-encoded sample
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch the sample's first 4 MB
+        run: >
+          curl -fsSL -r 0-4194303 -o "$RUNNER_TEMP/prores-sample.mov"
+          https://probelibrary.s3.amazonaws.com/samples/V-codecs/HCPA/AppleProRes422.mov
+      - name: Tests
+        run: cargo test --release --test sample -- --nocapture
+        env:
+          PRORES_SAMPLE: ${{ runner.temp }}/prores-sample.mov
+
+  msrv:
+    name: MSRV (1.89)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+
+  lint:
+    name: clippy and rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
