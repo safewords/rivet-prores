@@ -1,0 +1,5 @@
+# Sources and manifests check out with LF on every platform, as in the other
+# rivet codec crates; test frames are bytes and must never be touched.
+* text=auto eol=lf
+*.icpf binary
+*.bin binary
