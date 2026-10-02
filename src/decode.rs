@@ -38,6 +38,7 @@ impl Decoder {
     /// `frame_size`. Bytes after `frame_size` are ignored.
     pub fn decode(&self, data: &[u8]) -> Result<Frame> {
         let hdr = FrameHeader::parse(data)?;
+        check_plausible_size(&hdr)?;
         let bit_depth = self.bit_depth.unwrap_or(match hdr.chroma {
             ChromaFormat::Yuv422 => 10,
             ChromaFormat::Yuv444 => 12,
@@ -59,6 +60,28 @@ impl Decoder {
         }
         Ok(frame)
     }
+}
+
+/// Refuses, before the frame buffer is allocated, a frame too small to
+/// hold the slices its dimensions imply: each slice needs at least 11
+/// bytes (its slice table entry, a 6-byte header and a byte of data per
+/// colour component), and a picture has at least one slice per 8
+/// macroblocks. Without this a few bytes claiming 65535×65535 would cost
+/// gigabytes before the first error.
+fn check_plausible_size(hdr: &FrameHeader) -> Result<()> {
+    let width_in_mb = (hdr.width as u64).div_ceil(16);
+    let mut need = 8 + hdr.header_size as u64;
+    for index in 0..hdr.picture_count() {
+        let slices = slice_sizes(width_in_mb as u32, 3).len() as u64 * (hdr.picture_height(index) as u64).div_ceil(16);
+        need += crate::header::PICTURE_HEADER_SIZE as u64 + 11 * slices;
+    }
+    if (hdr.frame_size as u64) < need {
+        return Err(invalid(format!(
+            "frame_size {} is too small for a {}×{} frame (at least {need} bytes)",
+            hdr.frame_size, hdr.width, hdr.height
+        )));
+    }
+    Ok(())
 }
 
 /// What every slice of a frame shares.
