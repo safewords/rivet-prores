@@ -84,14 +84,40 @@ impl Profile {
         }
     }
 
-    /// Target size of one frame in bytes: the reference rate's bytes per
-    /// frame, scaled by the frame's area. Apple's rates scale with frame
-    /// rate, so the size per frame does not depend on it. Alpha is coded
-    /// losslessly on top of this.
+    /// Target size of one frame in bytes, for the default configuration
+    /// (progressive, 8-macroblock slices, no loaded matrices): the
+    /// reference rate's bytes per macroblock times the frame's macroblocks,
+    /// plus the frame's headers — the frame header, the picture header, and
+    /// each slice's table entry and header.
+    ///
+    /// The reference rate's bytes per 1920×1080 frame less that frame's
+    /// headers, over its 8160 macroblocks (1920×1088 coded), is the
+    /// profile's coded data per macroblock; a frame of any size gets as
+    /// much per macroblock (partial macroblocks at the right and bottom
+    /// edges are coded whole), with its own headers on top. 1920×1080
+    /// comes out at the reference rate. Scaling by area instead would let
+    /// the headers, fixed per frame and per slice, eat a small frame's
+    /// budget: a single 16×16 macroblock would keep a third of its share.
+    /// Apple's rates scale with frame rate, so the size per frame does not
+    /// depend on it. Alpha is coded losslessly on top of this.
     pub fn target_frame_bytes(self, width: u32, height: u32) -> usize {
         let per_frame = self.reference_bitrate() as f64 * 1001.0 / 30000.0 / 8.0;
-        (per_frame * (width as f64 * height as f64) / (1920.0 * 1080.0)) as usize
+        let per_mb = (per_frame - default_headers(1920, 1080) as f64) / macroblocks(1920, 1080) as f64;
+        (per_mb * macroblocks(width, height) as f64) as usize + default_headers(width, height)
     }
+}
+
+/// Macroblocks of a progressive `width` × `height` frame.
+fn macroblocks(width: u32, height: u32) -> u64 {
+    width.div_ceil(16) as u64 * height.div_ceil(16) as u64
+}
+
+/// Header bytes of a progressive frame in the default configuration: the
+/// frame header without matrices (8 + 20), one picture header, and per
+/// slice its 2-byte table entry and 6-byte slice header.
+fn default_headers(width: u32, height: u32) -> usize {
+    let slices = slice_sizes(width.div_ceil(16), 3).len() * height.div_ceil(16) as usize;
+    8 + crate::header::FRAME_HEADER_FIXED + PICTURE_HEADER_SIZE + (2 + 6) * slices
 }
 
 /// What to encode and how.

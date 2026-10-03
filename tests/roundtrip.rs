@@ -191,6 +191,38 @@ fn alpha_is_lossless() {
     }
 }
 
+/// Tiny frames get the profile's coded data per macroblock, with their
+/// headers on top: a 16×16 frame is one macroblock whose frame, picture and
+/// slice headers (44 bytes) once took most of an area-scaled share (113
+/// bytes for HQ), leaving the coarsest quantisers. The frame stays within
+/// its target, and quality is well above what the area-scaled target gave.
+#[test]
+fn tiny_frames_get_their_share_per_macroblock() {
+    let per_mb = |p: Profile| {
+        (p.target_frame_bytes(1920, 1080) - p.target_frame_bytes(1920, 1080 - 16 * 67)) as f64 / (120.0 * 67.0)
+    };
+    for profile in [Profile::Proxy, Profile::Standard, Profile::Hq, Profile::P4444] {
+        let mb = per_mb(profile);
+        for (w, h) in [(16u32, 16u32), (32, 32), (17, 9), (33, 31), (8, 40), (1, 1)] {
+            let frame = test_frame(w, h, profile.chroma(), depth_for(profile), 8, w * 31 + h);
+            let (packet, decoded) = round_trip(&frame, Config::new(profile));
+            let target = profile.target_frame_bytes(w, h);
+            let mbs = (w.div_ceil(16) * h.div_ceil(16)) as f64;
+            // The old rule: the 1080 frame's bytes scaled by area.
+            let area = (profile.target_frame_bytes(1920, 1080) as f64 * (w * h) as f64 / (1920.0 * 1080.0)) as usize;
+            let (_, old) = round_trip(&frame, Config { target_frame_bytes: Some(area), ..Config::new(profile) });
+            let (p, p_old) = (psnr_all(&frame, &decoded), psnr_all(&frame, &old));
+            eprintln!(
+                "{profile:?} {w}×{h}: {} bytes (target {target}, area-scaled {area}), PSNR {p:.2} dB (area-scaled {p_old:.2} dB)",
+                packet.len()
+            );
+            assert!(packet.len() <= target, "{profile:?} {w}×{h} overshoots");
+            assert!((target as f64) > mb * mbs, "{profile:?} {w}×{h}: target {target} under {mb:.0} per macroblock");
+            assert!(p >= p_old, "{profile:?} {w}×{h}: {p} < {p_old}");
+        }
+    }
+}
+
 /// 8-bit alpha at sizes off the macroblock grid: the bottom slices' alpha
 /// covers whole macroblocks (16 rows), and a run of equal values that
 /// carries on below the picture is read (a 640×360 4444 XQ frame with a

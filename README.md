@@ -67,14 +67,25 @@ of a desktop x86-64, release build).
 | 4444 XQ | 4:4:4 (+ alpha) | 8–16-bit | 2 085 416 bytes (500 Mb/s) |
 
 The rates are Apple's published figures for 1920×1080 at 29.97 frames per
-second; the per-frame target is that rate's bytes per frame, scaled by the
-frame's area (`Profile::target_frame_bytes`), or whatever
+second. The per-frame target (`Profile::target_frame_bytes`) gives every
+frame that rate's coded data per macroblock — the 1080 frame's bytes less
+its headers, over its 8160 macroblocks — times its own macroblocks, plus
+its own headers (frame and picture header, and per slice a table entry
+and a slice header); 1920×1080 comes out at the reference rate, or
 `Config::target_frame_bytes` says. Alpha is coded losslessly on top of the
 target, as 16-bit samples by default (exact for any input depth) or 8-bit.
 
-Scaling by area is an approximation away from 1080: Apple's own 422 HQ
-frames at 720×486 (the sample below) are about 255 000 bytes, where
-area-scaling gives 154 843. Apple publishes rates per frame size; until
+Until 2026-10-03 the target was the 1080 frame's bytes scaled by area,
+headers included. At tiny sizes the headers, fixed per frame and per
+slice, then took most of it: a 16×16 422 HQ frame (one macroblock) had
+113 bytes of which 44 were headers, and sat at the coarsest quantisers;
+it now has 155, a macroblock's share of data plus its headers (35.2 dB
+against 30.4 dB on the round-trip test picture; `tests/roundtrip.rs`,
+`tiny_frames_get_their_share_per_macroblock`).
+
+A constant rate per macroblock is an approximation away from 1080: Apple's
+own 422 HQ frames at 720×486 (the sample below) are about 255 000 bytes,
+where it gives about 157 000. Apple publishes rates per frame size; until
 those are tabulated here, a caller matching Apple's sizes at SD or UHD sets
 `Config::target_frame_bytes`.
 
