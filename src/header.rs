@@ -90,10 +90,10 @@ impl FrameHeader {
         if (frame_size as usize) > data.len() {
             return Err(invalid(format!("frame_size {frame_size} exceeds the {} bytes given", data.len())));
         }
-        let h = &data[8..frame_size as usize];
-        if h.len() < FRAME_HEADER_FIXED {
+        if (frame_size as usize) < 8 + FRAME_HEADER_FIXED {
             return Err(invalid("frame_size leaves no room for the frame header"));
         }
+        let h = &data[8..frame_size as usize];
         let header_size = u16::from_be_bytes([h[0], h[1]]);
         if (header_size as usize) < FRAME_HEADER_FIXED || header_size as usize > h.len() {
             return Err(invalid(format!("frame_header_size {header_size} is out of range")));
