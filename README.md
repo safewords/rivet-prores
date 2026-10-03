@@ -1,6 +1,6 @@
 # rivet-prores
 
-[![CI](https://github.com/rivet-transcoder/rivet-prores/actions/workflows/ci.yml/badge.svg)](https://github.com/rivet-transcoder/rivet-prores/actions/workflows/ci.yml)
+[![CI](https://github.com/safewords/rivet-prores/actions/workflows/ci.yml/badge.svg)](https://github.com/safewords/rivet-prores/actions/workflows/ci.yml)
 
 An **Apple ProRes** decoder and encoder in Rust: no C, no system libraries,
 no build script, nothing to install on a build host. Written from SMPTE
@@ -8,7 +8,7 @@ RDD 36:2022, *Apple ProRes Bitstream Syntax and Decoding Process*, not
 translated from any other implementation. The decoder reads Apple's own
 encoder's frames (the figures are [below](#how-it-is-checked)).
 
-Written for the **[rivet](https://github.com/rivet-transcoder/rivet)**
+Written for the **[rivet](https://github.com/safewords/rivet)**
 transcoder, where it is the ProRes codec on both sides: the decoder that
 lets a ProRes master be transcoded, and the encoder behind ProRes output.
 Usable on its own by anything that has MOV / Matroska samples and wants
@@ -19,7 +19,7 @@ dependency (`thiserror`), no features, no build script.
 
 ```toml
 [dependencies]
-prores = { package = "rivet-prores", git = "https://github.com/rivet-transcoder/rivet-prores", branch = "develop" }
+prores = { package = "rivet-prores", git = "https://github.com/safewords/rivet-prores", branch = "develop" }
 ```
 
 ## What it decodes
