@@ -191,6 +191,30 @@ fn alpha_is_lossless() {
     }
 }
 
+/// 8-bit alpha at sizes off the macroblock grid: the bottom slices' alpha
+/// covers whole macroblocks (16 rows), and a run of equal values that
+/// carries on below the picture is read (a 640×360 4444 XQ frame with a
+/// vertical alpha ramp failed with "an alpha run passes the end of the
+/// slice" when the decoder expected only the picture's rows).
+#[test]
+fn alpha8_off_the_macroblock_grid() {
+    for (w, h) in [(640u32, 360u32), (100, 40), (33, 17), (16, 8), (24, 24)] {
+        for interlace in [Interlace::Progressive, Interlace::BottomFieldFirst] {
+            let mut frame = test_frame(w, h, ChromaFormat::Yuv444, 8, 2, w ^ h);
+            frame.interlace = interlace;
+            // A vertical ramp: every row one value, so runs span rows.
+            let alpha: Vec<u16> = (0..h).flat_map(|y| (0..w).map(move |_| (y * 255 / (h - 1)) as u16)).collect();
+            frame.alpha = Some(alpha.clone());
+            for profile in [Profile::P4444, Profile::P4444Xq] {
+                let config = Config { alpha: AlphaType::Bits8, ..Config::new(profile) };
+                let packet = Encoder::new(config).encode(&frame).unwrap();
+                let decoded = Decoder::with_bit_depth(8).unwrap().decode(&packet).unwrap();
+                assert_eq!(decoded.alpha.as_ref().unwrap(), &alpha, "{w}×{h} {interlace:?} {profile:?}");
+            }
+        }
+    }
+}
+
 /// 16-bit alpha decoded at 12 bits follows §7.5.2's rounding.
 #[test]
 fn alpha_converts_to_the_output_depth() {

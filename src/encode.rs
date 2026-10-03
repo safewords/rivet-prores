@@ -370,8 +370,7 @@ fn encode_picture(hdr: &FrameHeader, index: usize, frame: &Frame, log2_slice_mbs
             }
             let alpha = match (&frame.alpha, hdr.alpha) {
                 (Some(a), t) if t != AlphaType::None => {
-                    let rows = if mb_y + 1 < height_in_mb { 16 } else { height - 16 * (height_in_mb - 1) };
-                    slice_alpha(frame, a, t.bits(), mb_x, mbs, mb_y, rows, first_row, step)
+                    slice_alpha(frame, a, t.bits(), mb_x, mbs, mb_y, height, first_row, step)
                 }
                 _ => Vec::new(),
             };
@@ -490,9 +489,11 @@ fn encode_picture(hdr: &FrameHeader, index: usize, frame: &Frame, log2_slice_mbs
     out[pic_start + 1..pic_start + 5].copy_from_slice(&picture_size.to_be_bytes());
 }
 
-/// One slice's alpha, converted to `bits` bits and coded. Columns past the
-/// frame's right edge repeat the last one (§7.5.3: they are coded and
-/// discarded); the rows are the slice's rows within the picture.
+/// One slice's alpha, converted to `bits` bits and coded: its whole
+/// macroblocks, 16 rows of `16 · mbs` values (§5.3.3). Columns past the
+/// frame's right edge repeat the last one and rows past the picture's
+/// bottom (`height` rows) the last row (§7.5.3: they are coded and
+/// discarded).
 #[allow(clippy::too_many_arguments)]
 fn slice_alpha(
     frame: &Frame,
@@ -501,7 +502,7 @@ fn slice_alpha(
     mb_x: u32,
     mbs: u32,
     mb_y: usize,
-    rows: usize,
+    height: usize,
     first_row: usize,
     step: usize,
 ) -> Vec<u8> {
@@ -510,9 +511,9 @@ fn slice_alpha(
     let max_out = (1u64 << bits) - 1;
     let cols = 16 * mbs as usize;
     let x0 = 16 * mb_x as usize;
-    let mut values = Vec::with_capacity(cols * rows);
-    for r in 0..rows {
-        let row = first_row + step * (16 * mb_y + r);
+    let mut values = Vec::with_capacity(cols * 16);
+    for r in 0..16 {
+        let row = first_row + step * (16 * mb_y + r).min(height - 1);
         for n in 0..cols {
             let a = (alpha[row * width + (x0 + n).min(width - 1)] as u64).min(max_in);
             // round(max_out · a ÷ max_in)
@@ -575,8 +576,44 @@ mod tests {
             let mut w = BitWriter::new(&mut bytes);
             encode_alpha(&mut w, &v, bits);
             w.finish();
-            assert_eq!(decode_alpha(&bytes, bits, v.len()).unwrap(), v);
+            assert_eq!(decode_alpha(&bytes, bits, v.len(), v.len()).unwrap(), v);
         }
+    }
+
+    /// A bottom slice's alpha covers its whole macroblocks: 16 rows, those
+    /// below the picture repeating its last row (§5.3.3, §7.5.3), so a
+    /// decoder that reads 256 values per macroblock finds them all.
+    #[test]
+    fn slice_alpha_codes_whole_macroblocks() {
+        // 40×20: two macroblock rows, the second with 4 picture rows.
+        let mut frame = Frame::new(40, 20, ChromaFormat::Yuv444, 8).unwrap();
+        let alpha: Vec<u16> = (0..20u16).flat_map(|y| (0..40u16).map(move |x| 10 * y + x % 3)).collect();
+        frame.alpha = Some(alpha.clone());
+        let (mbs, cols) = (3u32, 48usize);
+        let bytes = slice_alpha(&frame, &alpha, 8, 0, mbs, 1, 20, 0, 1);
+        let got = decode_alpha(&bytes, 8, 16 * cols, 16 * cols).unwrap();
+        assert_eq!(got.len(), 16 * cols);
+        for r in 0..16 {
+            for n in 0..cols {
+                let (y, x) = ((16 + r).min(19), n.min(39));
+                assert_eq!(got[r * cols + n], alpha[y * 40 + x], "row {r} column {n}");
+            }
+        }
+    }
+
+    /// Alpha coded only down to the picture's last row (as this encoder
+    /// wrote it before 2026-10) is still read: the decoder stops where the
+    /// data does once it has the values it uses.
+    #[test]
+    fn alpha_that_stops_at_the_picture_is_read() {
+        let v: Vec<u16> = (0..4 * 32).map(|i| (i / 32) as u16 * 50).collect();
+        let mut bytes = Vec::new();
+        let mut w = BitWriter::new(&mut bytes);
+        encode_alpha(&mut w, &v, 8);
+        w.finish();
+        let got = decode_alpha(&bytes, 8, 16 * 32, v.len()).unwrap();
+        assert_eq!(&got[..v.len()], &v[..]);
+        assert!(decode_alpha(&bytes, 8, 16 * 32, v.len() + 1).is_err());
     }
 
     #[test]

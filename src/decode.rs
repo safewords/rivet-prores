@@ -224,9 +224,13 @@ fn decode_slice(
     }
 
     if has_alpha {
+        // The slice's alpha covers its whole macroblocks, 16 rows of
+        // 16 · mbs values (§5.3.3), like its colour; values outside the
+        // picture are discarded (§7.5.3). A bottom slice that stops at the
+        // picture's last row is read too: the rows below are not used.
         let rows = if mb_y + 1 < height_in_mb { 16 } else { place.height - 16 * (height_in_mb - 1) };
         let cols = 16 * mbs as usize;
-        let values = decode_alpha(alpha_data, hdr.alpha.bits(), cols * rows)?;
+        let values = decode_alpha(alpha_data, hdr.alpha.bits(), cols * 16, cols * rows)?;
         let max_in = (1u64 << hdr.alpha.bits()) - 1;
         let max_out = (1u64 << ctx.bit_depth) - 1;
         let width = frame.width as usize;
@@ -324,13 +328,17 @@ pub(crate) fn decode_coefficients(data: &[u8], n_blocks: usize, coeffs: &mut [i3
     Ok(())
 }
 
-/// `scanned_alpha()` (§5.3.3, §7.1.2): `count` raster-scanned values.
-pub(crate) fn decode_alpha(data: &[u8], bits: u32, count: usize) -> Result<Vec<u16>> {
+/// `scanned_alpha()` (§5.3.3, §7.1.2): `count` raster-scanned values, or,
+/// when the data ends first, at least the `needed` the caller uses.
+pub(crate) fn decode_alpha(data: &[u8], bits: u32, count: usize, needed: usize) -> Result<Vec<u16>> {
     let mut r = BitReader::new(data);
     let mask = (1i32 << bits) - 1;
     let mut out = Vec::with_capacity(count);
     let mut prev: i32 = -1;
     while out.len() < count {
+        if out.len() >= needed && r.end_of_data() {
+            break;
+        }
         let (diff, _modulo) = vlc::read_alpha_difference(&mut r, bits)?;
         // Masking an exact difference changes nothing (§7.1.2's note).
         let alpha = prev.wrapping_add(diff) & mask;

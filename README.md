@@ -35,7 +35,7 @@ decoder.
 | **Chroma** | 4:2:2, 4:4:4 | the reserved codes 0 and 1 |
 | **Scanning** | progressive frames; interlaced frames as two field pictures, either field first | `interlace_mode` 3 |
 | **Quantisation** | the default matrix, loaded luma and chroma matrices, quantisation indices 1–224 | index 0 and 225–255 (reserved) |
-| **Alpha** | 8- and 16-bit, lossless | `alpha_channel_type` 3–15 |
+| **Alpha** | 8- and 16-bit, lossless; each slice's alpha covers its whole macroblocks (16 rows, those below the picture discarded), and alpha that stops at the picture's last row is read too | `alpha_channel_type` 3–15 |
 | **Sizes** | 1×1 to 65535×65535, any slice size (1, 2, 4, 8 macroblocks) | — |
 | **Skipped** | version-variant bytes in any header (by its size field), stuffing, bytes after `frame_size` | — |
 
