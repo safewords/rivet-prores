@@ -39,6 +39,23 @@ impl<'a> BitReader<'a> {
         u64::from_be_bytes(buf) << (self.pos & 7)
     }
 
+    /// The next 64 bits, MSB-aligned, when the 8 bytes from the current
+    /// one are all data: then at least 57 of them are real bits. The
+    /// decoder's fast path; near the end it is `None`.
+    #[inline]
+    pub(crate) fn peek_fast(&self) -> Option<u64> {
+        let byte = self.pos >> 3;
+        let bytes: [u8; 8] = self.data.get(byte..byte + 8)?.try_into().ok()?;
+        Some(u64::from_be_bytes(bytes) << (self.pos & 7))
+    }
+
+    /// Consumes `n` bits the caller has seen through [`Self::peek_fast`].
+    #[inline]
+    pub(crate) fn skip(&mut self, n: u32) {
+        debug_assert!(n as usize <= self.remaining());
+        self.pos += n as usize;
+    }
+
     /// `n` bits (0..=57) as an unsigned number.
     #[inline]
     pub(crate) fn read(&mut self, n: u32) -> Result<u64> {
@@ -101,9 +118,11 @@ pub(crate) trait BitSink {
 }
 
 /// Counts bits without storing them.
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct BitCounter(pub(crate) usize);
 
+#[cfg(test)]
 impl BitSink for BitCounter {
     #[inline]
     fn put(&mut self, _v: u64, n: u32) {
@@ -114,12 +133,14 @@ impl BitSink for BitCounter {
     }
 }
 
-/// Appends bits to a byte vector.
+/// Appends bits to a byte vector, 64 at a time. [`BitWriter::finish`]
+/// (or dropping the writer) byte-aligns and writes what is held.
 pub(crate) struct BitWriter<'a> {
     out: &'a mut Vec<u8>,
     start: usize,
+    /// The last `nacc` bits written, in the low bits.
     acc: u64,
-    /// Bits held in `acc` (always < 8 between calls).
+    /// Bits held in `acc`, always < 64.
     nacc: u32,
 }
 
@@ -131,8 +152,23 @@ impl<'a> BitWriter<'a> {
 
     /// Byte-aligns with `0` bits and returns the bytes written.
     pub(crate) fn finish(mut self) -> usize {
-        self.align();
+        self.flush();
         self.out.len() - self.start
+    }
+
+    fn flush(&mut self) {
+        self.align();
+        if self.nacc > 0 {
+            let bytes = (self.acc << (64 - self.nacc)).to_be_bytes();
+            self.out.extend_from_slice(&bytes[..self.nacc as usize / 8]);
+            (self.acc, self.nacc) = (0, 0);
+        }
+    }
+}
+
+impl Drop for BitWriter<'_> {
+    fn drop(&mut self) {
+        self.flush();
     }
 }
 
@@ -140,17 +176,20 @@ impl BitSink for BitWriter<'_> {
     #[inline]
     fn put(&mut self, v: u64, n: u32) {
         debug_assert!(n <= 57);
-        if n == 0 {
-            return;
-        }
         let v = v & ((1u64 << n) - 1);
-        self.acc = (self.acc << n) | v;
-        self.nacc += n;
-        while self.nacc >= 8 {
-            self.nacc -= 8;
-            self.out.push((self.acc >> self.nacc) as u8);
+        let free = 64 - self.nacc;
+        if n < free {
+            self.acc = (self.acc << n) | v;
+            self.nacc += n;
+        } else {
+            // Fill the accumulator (free ≤ n, so free < 64), write it, and
+            // keep the bits that did not fit.
+            let rest = n - free;
+            let full = (self.acc << free) | (v >> rest);
+            self.out.extend_from_slice(&full.to_be_bytes());
+            self.acc = v & ((1u64 << rest) - 1);
+            self.nacc = rest;
         }
-        self.acc &= (1u64 << self.nacc) - 1;
     }
     fn bits(&self) -> usize {
         (self.out.len() - self.start) * 8 + self.nacc as usize

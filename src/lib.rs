@@ -37,10 +37,12 @@
 pub(crate) mod bits;
 pub(crate) mod dct;
 pub mod decode;
+pub(crate) mod dsp;
 pub mod encode;
 mod error;
 pub mod frame;
 pub mod header;
+pub(crate) mod pool;
 pub(crate) mod tables;
 pub(crate) mod vlc;
 

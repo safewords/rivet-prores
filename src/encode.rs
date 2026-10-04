@@ -11,14 +11,17 @@
 //! the quality across a picture stays nearly uniform. Alpha, which is
 //! lossless, is coded on top of the target.
 
-use crate::bits::{BitCounter, BitSink, BitWriter};
-use crate::decode::block_position;
-use crate::dct::fdct;
+use crate::bits::{BitSink, BitWriter};
+use crate::decode::{Rescale, block_position};
+use crate::dsp::{self, Isa};
 use crate::error::{Result, config};
 use crate::frame::{ChromaFormat, Frame, Interlace};
 use crate::header::{AlphaType, FrameHeader, PICTURE_HEADER_SIZE, PictureHeader, slice_sizes};
+use crate::pool;
 use crate::tables::{INTERLACED_SCAN, PROGRESSIVE_SCAN, qscale};
-use crate::vlc::{self, FIRST_DC_CODEBOOK, signed_to_symbol};
+use crate::vlc::{self, Codebook, FIRST_DC_CODEBOOK, signed_to_symbol};
+use std::cell::RefCell;
+use std::sync::Mutex;
 
 /// The ProRes family. The bitstream does not name its profile — they share
 /// one syntax and differ in chroma format, alpha and bit rate — so the
@@ -141,6 +144,11 @@ pub struct Config {
     pub target_frame_bytes: Option<usize>,
     /// The `encoder_identifier` written in the frame header.
     pub encoder_identifier: [u8; 4],
+    /// Threads to encode on: the calling one and workers shared by every
+    /// encoder and decoder in the process. 0 (the default) means one per
+    /// CPU; 1 keeps all the work on the calling thread. The output is the
+    /// same at any thread count.
+    pub threads: usize,
 }
 
 impl Config {
@@ -154,6 +162,7 @@ impl Config {
             chroma_matrix: None,
             target_frame_bytes: None,
             encoder_identifier: *b"rivt",
+            threads: 0,
         }
     }
 
@@ -176,9 +185,9 @@ pub struct Encoder {
     config: Config,
 }
 
-/// Rounding offsets for quantisation: nearest for DC, a small dead zone for
-/// AC (it costs little distortion and saves bits at every quantiser).
-const DC_ROUNDING: f32 = 0.5;
+/// Rounding offset for quantising AC coefficients: a small dead zone (it
+/// costs little distortion and saves bits at every quantiser). The DC is
+/// rounded to nearest (0.5, in [`dsp::quantise`]).
 const AC_ROUNDING: f32 = 0.42;
 
 impl Encoder {
@@ -237,7 +246,7 @@ impl Encoder {
         let pictures = hdr.picture_count();
         let per_picture = target.saturating_sub(out.len()) / pictures;
         for index in 0..pictures {
-            encode_picture(&hdr, index, frame, cfg.log2_slice_mbs, per_picture, &mut out);
+            encode_picture(&hdr, index, frame, cfg.log2_slice_mbs, per_picture, cfg.threads, &mut out);
         }
         let size = out.len() as u32;
         out[0..4].copy_from_slice(&size.to_be_bytes());
@@ -245,71 +254,139 @@ impl Encoder {
     }
 }
 
-/// One slice's transformed blocks, per component, in slice block order;
-/// and its alpha, already coded (alpha is lossless, so its size is fixed).
-struct SliceBlocks {
+/// One slice's transformed blocks, per component, in scanned order
+/// (`comps[c][n · s + b]` is position `s` of the scan of block `b`, `n`
+/// blocks — the order the entropy coder walks); and its alpha, already
+/// coded (alpha is lossless, so its size is fixed).
+struct SliceBlocks<'a> {
     mbs: u32,
-    comps: [Vec<[f32; 64]>; 3],
+    comps: [&'a [f32]; 3],
     alpha: Vec<u8>,
 }
 
-/// The coded bytes of one slice for one component at one quantiser.
-fn component_bytes(blocks: &[[f32; 64]], weights: &[u8; 64], q: u32, scan: &[u8; 64], scratch: &mut Vec<i32>) -> usize {
-    quantise(blocks, weights, q, scan, scratch);
-    let mut c = BitCounter::default();
-    encode_coefficients(&mut c, scratch, blocks.len());
-    c.0.div_ceil(8)
+/// `8 ÷ (W · qScale)` at every scanned position, for luma and chroma, for
+/// every quantization_index (index 0 unused): QF = F · 8 ÷ (W · qScale),
+/// the inverse of §7.3.
+struct Quantisers(Vec<[[f32; 64]; 2]>);
+
+impl Quantisers {
+    fn new(luma: &[u8; 64], chroma: &[u8; 64], scan: &[u8; 64]) -> Quantisers {
+        let table = |w: &[u8; 64], q: u32| {
+            let mut inv = [0f32; 64];
+            for k in 0..64 {
+                inv[scan[k] as usize] = 8.0 / (w[k] as u32 * q) as f32;
+            }
+            inv
+        };
+        Quantisers((0..=224u8).map(|qi| [table(luma, qscale(qi.max(1))), table(chroma, qscale(qi.max(1)))]).collect())
+    }
+
+    fn get(&self, qi: u8, plane: usize) -> &[f32; 64] {
+        &self.0[qi as usize][(plane > 0) as usize]
+    }
 }
 
-fn quantise(blocks: &[[f32; 64]], weights: &[u8; 64], q: u32, scan: &[u8; 64], out: &mut Vec<i32>) {
-    let n = blocks.len();
-    out.clear();
-    out.resize(n * 64, 0);
-    let mut inv = [0f32; 64];
-    for k in 0..64 {
-        // QF = F · 8 ÷ (W · qScale), the inverse of §7.3.
-        inv[k] = 8.0 / (weights[k] as u32 * q) as f32;
+/// A slice component quantised: the scanned array and its non-zero bitmap.
+#[derive(Default)]
+pub(crate) struct Quantised {
+    pub(crate) values: Vec<i32>,
+    pub(crate) mask: Vec<u64>,
+}
+
+impl Quantised {
+    pub(crate) fn quantise(&mut self, isa: Isa, f: &[f32], inv: &[f32; 64]) {
+        let n = f.len() / 64;
+        self.values.resize(64 * n, 0);
+        self.mask.resize(n, 0);
+        dsp::quantise(isa, f, n, inv, AC_ROUNDING, &mut self.values, &mut self.mask);
     }
-    for (blk, f) in blocks.iter().enumerate() {
-        for k in 0..64 {
-            let x = f[k] * inv[k];
-            let r = if k == 0 { DC_ROUNDING } else { AC_ROUNDING };
-            let m = (x.abs() + r).floor() as i32;
-            out[n * scan[k] as usize + blk] = if x < 0.0 { -m } else { m };
+}
+
+thread_local! {
+    /// Each thread's quantisation buffer, reused from slice to slice.
+    static SCRATCH: RefCell<Quantised> = RefCell::default();
+    /// The transformed picture, kept by the encoding thread from frame to
+    /// frame: a picture's worth of fresh memory each frame costs more in
+    /// page faults than transforming it does.
+    static COEFFICIENTS: RefCell<Vec<f32>> = RefCell::default();
+}
+
+/// Calls `f(i)` for every set bit `i ≥ from` of `mask`, in order.
+#[inline(always)]
+fn for_each_set_bit(mask: &[u64], from: usize, mut f: impl FnMut(usize)) {
+    for (w, &word) in mask.iter().enumerate().skip(from / 64) {
+        let mut bits = if w == from / 64 { word & (!0u64 << (from % 64)) } else { word };
+        while bits != 0 {
+            f(64 * w + bits.trailing_zeros() as usize);
+            bits &= bits - 1;
         }
     }
 }
 
-/// `scanned_coefficients()` (§5.3.2) from a scanned array, byte-aligned.
-pub(crate) fn encode_coefficients<S: BitSink>(s: &mut S, scanned: &[i32], n_blocks: usize) {
+/// The DC part of `scanned_coefficients()` (§7.1.1.3), as (codebook,
+/// symbol) pairs.
+#[inline(always)]
+fn dc_symbols(scanned: &[i32], n_blocks: usize, mut f: impl FnMut(Codebook, u32)) {
     let first = scanned[0];
-    FIRST_DC_CODEBOOK.put(s, signed_to_symbol(first));
+    f(FIRST_DC_CODEBOOK, signed_to_symbol(first));
     let mut prev_dc = first;
     let mut prev_diff = 3i32;
     for &dc in &scanned[1..n_blocks] {
         let diff = dc - prev_dc;
         let n = if prev_diff < 0 { -diff } else { diff };
-        vlc::dc_codebook(prev_diff).put(s, signed_to_symbol(n));
+        f(vlc::dc_codebook(prev_diff), signed_to_symbol(n));
         prev_diff = diff;
         prev_dc = dc;
     }
-    let mut prev_run = 4u32;
-    let mut prev_level = 1u32;
-    let mut run = 0u32;
-    for &c in &scanned[n_blocks..] {
-        if c == 0 {
-            run += 1;
-            continue;
+}
+
+/// Bits [`encode_coefficients_masked`] writes, before byte alignment.
+pub(crate) fn coefficient_bits(q: &Quantised, n_blocks: usize) -> usize {
+    let mut bits = 0u32;
+    dc_symbols(&q.values, n_blocks, |cb, n| bits += cb.len(n));
+    let (mut prev_run, mut prev_level, mut pos) = (4u32, 1u32, n_blocks);
+    for_each_set_bit(&q.mask, n_blocks, |i| {
+        let run = (i - pos) as u32;
+        let level = q.values[i].unsigned_abs() - 1;
+        bits += vlc::run_len(prev_run, run) + vlc::level_len(prev_level, level) + 1;
+        (prev_run, prev_level, pos) = (run, level, i + 1);
+    });
+    bits as usize
+}
+
+/// `scanned_coefficients()` (§5.3.2) from a quantised component,
+/// byte-aligned.
+pub(crate) fn encode_coefficients_masked<S: BitSink>(s: &mut S, q: &Quantised, n_blocks: usize) {
+    dc_symbols(&q.values, n_blocks, |cb, n| cb.put(s, n));
+    let (mut prev_run, mut prev_level, mut pos) = (4u32, 1u32, n_blocks);
+    for_each_set_bit(&q.mask, n_blocks, |i| {
+        let run = (i - pos) as u32;
+        let c = q.values[i];
+        let level = c.unsigned_abs() - 1;
+        // Run, level and sign in one write when they fit.
+        match (vlc::run_code(prev_run, run), vlc::level_code(prev_level, level)) {
+            (Some((r, rl)), Some((l, ll))) if rl + ll < 57 => {
+                s.put((((r << ll) | l) << 1) | (c < 0) as u64, rl + ll + 1);
+            }
+            _ => {
+                vlc::run_codebook(prev_run).put(s, run);
+                vlc::level_codebook(prev_level).put(s, level);
+                s.put((c < 0) as u64, 1);
+            }
         }
-        vlc::run_codebook(prev_run).put(s, run);
-        prev_run = run;
-        run = 0;
-        let level_symbol = c.unsigned_abs() - 1;
-        vlc::level_codebook(prev_level).put(s, level_symbol);
-        prev_level = level_symbol;
-        s.put((c < 0) as u64, 1);
-    }
+        (prev_run, prev_level, pos) = (run, level, i + 1);
+    });
     s.align();
+}
+
+/// `scanned_coefficients()` (§5.3.2) from a scanned array, byte-aligned.
+#[cfg(test)]
+pub(crate) fn encode_coefficients<S: BitSink>(s: &mut S, scanned: &[i32], n_blocks: usize) {
+    let mut mask = vec![0u64; scanned.len().div_ceil(64)];
+    for (i, &c) in scanned.iter().enumerate() {
+        mask[i / 64] |= ((c != 0) as u64) << (i % 64);
+    }
+    encode_coefficients_masked(s, &Quantised { values: scanned.to_vec(), mask }, n_blocks);
 }
 
 /// `scanned_alpha()` (§5.3.3) for raster-scanned values of `bits` bits.
@@ -317,133 +394,206 @@ pub(crate) fn encode_alpha<S: BitSink>(s: &mut S, values: &[u16], bits: u32) {
     let mut prev: i32 = -1;
     let mut i = 0;
     while i < values.len() {
-        let a = values[i] as i32;
-        let mut run = 1;
-        while run < 2048 && i + run < values.len() && values[i + run] as i32 == a {
-            run += 1;
-        }
-        vlc::put_alpha_difference(s, a - prev, bits);
+        let a = values[i];
+        let end = (i + 2048).min(values.len());
+        let run = 1 + values[i + 1..end].iter().take_while(|&&v| v == a).count();
+        vlc::put_alpha_difference(s, a as i32 - prev, bits);
         vlc::put_alpha_run(s, run as u32);
-        prev = a;
+        prev = a as i32;
         i += run;
     }
     s.align();
 }
 
-/// The picture's samples of one component, padded to whole macroblocks by
-/// repeating the last column and row, as reconstructed values
-/// `v = 512 · s ÷ 2^b − 256` (the inverse of §7.5.1).
-fn padded_component(
-    frame: &Frame,
-    plane: usize,
-    pic_w: usize,
-    pic_h: usize,
-    rows: (usize, usize, usize),
-) -> Vec<f32> {
-    let (first_row, step, height) = rows;
-    let p = frame.planes[plane];
-    let src = frame.plane(plane);
-    let scale = 512.0 / (1u32 << frame.bit_depth) as f32;
-    let (w, stride) = (p.width as usize, p.width as usize);
-    let mut out = vec![0f32; pic_w * pic_h];
-    for y in 0..pic_h {
-        let row = first_row + step * y.min(height - 1);
-        let line = &src[row * stride..row * stride + w];
-        for x in 0..pic_w {
-            out[y * pic_w + x] = line[x.min(w - 1)] as f32 * scale - 256.0;
-        }
-    }
-    out
+/// Where a picture's slices are and what they share.
+struct PictureLayout<'a> {
+    frame: &'a Frame,
+    hdr: &'a FrameHeader,
+    /// Picture rows, and the frame row of picture row 0 and the step.
+    height: usize,
+    first_row: usize,
+    step: usize,
+    scan: &'static [u8; 64],
+    isa: Isa,
 }
 
-fn encode_picture(hdr: &FrameHeader, index: usize, frame: &Frame, log2_slice_mbs: u32, budget: usize, out: &mut Vec<u8>) {
+impl PictureLayout<'_> {
+    /// The 8×8 samples of a block at (`bx`, `by`) in picture coordinates,
+    /// the picture padded to whole macroblocks by repeating its last column
+    /// and row.
+    fn block(&self, plane: usize, bx: usize, by: usize) -> [u16; 64] {
+        let p = self.frame.planes[plane];
+        let src = self.frame.plane(plane);
+        let w = p.width as usize;
+        let mut pix = [0u16; 64];
+        for (y, out) in pix.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+            let row = self.first_row + self.step * (by + y).min(self.height - 1);
+            let line = &src[row * w..row * w + w];
+            if bx + 8 <= w {
+                out.copy_from_slice(&line[bx..bx + 8]);
+            } else {
+                for (x, o) in out.iter_mut().enumerate() {
+                    *o = line[(bx + x).min(w - 1)];
+                }
+            }
+        }
+        pix
+    }
+
+    /// Coefficients of a slice of `mbs` macroblocks, all components.
+    fn slice_len(&self, mbs: u32) -> usize {
+        let chroma_per_mb = match self.frame.chroma {
+            ChromaFormat::Yuv422 => 2,
+            ChromaFormat::Yuv444 => 4,
+        };
+        64 * (4 + 2 * chroma_per_mb) * mbs as usize
+    }
+
+    /// Transforms one slice into `out` (component after component, each in
+    /// scanned order) and codes its alpha.
+    fn transform(&self, mb_x: u32, mbs: u32, mb_y: usize, out: &mut [f32]) -> Vec<u8> {
+        let frame = self.frame;
+        let chroma_per_mb = match frame.chroma {
+            ChromaFormat::Yuv422 => 2,
+            ChromaFormat::Yuv444 => 4,
+        };
+        // v = 512 · s ÷ 2^b − 256, the inverse of §7.5.1.
+        let scale = 512.0 / (1u32 << frame.bit_depth) as f32;
+        let mut rest = out;
+        for plane in 0..3 {
+            let per_mb = if plane == 0 { 4 } else { chroma_per_mb };
+            let n = per_mb * mbs as usize;
+            let (out, r) = rest.split_at_mut(64 * n);
+            rest = r;
+            for blk in 0..n {
+                let (bx, by) = block_position(plane, frame.chroma, mb_x, mb_y, blk / per_mb, blk % per_mb);
+                let f = dsp::fdct_load(self.isa, &self.block(plane, bx, by), scale);
+                for (k, &v) in f.iter().enumerate() {
+                    out[n * self.scan[k] as usize + blk] = v;
+                }
+            }
+        }
+        match (&frame.alpha, self.hdr.alpha) {
+            (Some(a), t) if t != AlphaType::None => {
+                slice_alpha(frame, a, t.bits(), mb_x, mbs, mb_y, self.height, self.first_row, self.step)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// A transformed slice's components, as [`Self::transform`] laid them out.
+    fn components<'a>(&self, mbs: u32, coefficients: &'a [f32]) -> [&'a [f32]; 3] {
+        let luma = 64 * 4 * mbs as usize;
+        let chroma = (coefficients.len() - luma) / 2;
+        let (y, c) = coefficients.split_at(luma);
+        let (cb, cr) = c.split_at(chroma);
+        [y, cb, cr]
+    }
+}
+
+fn encode_picture(
+    hdr: &FrameHeader,
+    index: usize,
+    frame: &Frame,
+    log2_slice_mbs: u32,
+    budget: usize,
+    threads: usize,
+    out: &mut Vec<u8>,
+) {
     let width_in_mb = frame.width.div_ceil(16);
     let height = hdr.picture_height(index) as usize;
     let height_in_mb = height.div_ceil(16);
     let (first_row, step) = hdr.picture_rows(index);
     let sizes = slice_sizes(width_in_mb, log2_slice_mbs);
     let scan = if hdr.interlace == Interlace::Progressive { &PROGRESSIVE_SCAN } else { &INTERLACED_SCAN };
-    let (chroma_w, chroma_per_mb) = match frame.chroma {
-        ChromaFormat::Yuv422 => (8, 2),
-        ChromaFormat::Yuv444 => (16, 4),
-    };
-    let pic_h = 16 * height_in_mb;
-    let rows = (first_row, step, height);
-    let comps = [
-        padded_component(frame, 0, 16 * width_in_mb as usize, pic_h, rows),
-        padded_component(frame, 1, chroma_w * width_in_mb as usize, pic_h, rows),
-        padded_component(frame, 2, chroma_w * width_in_mb as usize, pic_h, rows),
-    ];
-    let comp_w = [16 * width_in_mb as usize, chroma_w * width_in_mb as usize, chroma_w * width_in_mb as usize];
+    let isa = Isa::get();
+    let layout = PictureLayout { frame, hdr, height, first_row, step, scan, isa };
 
-    // Transform every block once.
-    let mut slices = Vec::with_capacity(sizes.len() * height_in_mb);
+    // Transform every block once, a slice per task.
+    let mut places = Vec::with_capacity(sizes.len() * height_in_mb);
     for mb_y in 0..height_in_mb {
         let mut mb_x = 0u32;
         for &mbs in &sizes {
-            let mut blocks: [Vec<[f32; 64]>; 3] = Default::default();
-            for plane in 0..3 {
-                let per_mb = if plane == 0 { 4 } else { chroma_per_mb };
-                for blk in 0..per_mb * mbs as usize {
-                    let (bx, by) = block_position(plane, frame.chroma, mb_x, mb_y, blk / per_mb, blk % per_mb);
-                    let mut pix = [0f32; 64];
-                    for y in 0..8 {
-                        let src = &comps[plane][(by + y) * comp_w[plane] + bx..][..8];
-                        pix[8 * y..8 * y + 8].copy_from_slice(src);
-                    }
-                    blocks[plane].push(fdct(&pix));
-                }
-            }
-            let alpha = match (&frame.alpha, hdr.alpha) {
-                (Some(a), t) if t != AlphaType::None => {
-                    slice_alpha(frame, a, t.bits(), mb_x, mbs, mb_y, height, first_row, step)
-                }
-                _ => Vec::new(),
-            };
-            slices.push(SliceBlocks { mbs, comps: blocks, alpha });
+            places.push((mb_x, mbs, mb_y));
             mb_x += mbs;
         }
     }
-
-    let header_bytes = if hdr.alpha != AlphaType::None { 8 } else { 6 };
-    let luma_w = hdr.luma_weights();
-    let chroma_w = hdr.chroma_weights();
-    let mut scratch = Vec::new();
-    let slice_size = |s: &SliceBlocks, qi: u8, scratch: &mut Vec<i32>| -> (usize, bool) {
-        let q = qscale(qi);
-        let y = component_bytes(&s.comps[0], &luma_w, q, scan, scratch);
-        let cb = component_bytes(&s.comps[1], &chroma_w, q, scan, scratch);
-        let cr = component_bytes(&s.comps[2], &chroma_w, q, scan, scratch);
-        let total = header_bytes + y + cb + cr + s.alpha.len();
-        // Every size field is 16 bits.
-        (total, total <= 65535 && y <= 65535 && cb <= 65535 && cr <= 65535)
+    let lens: Vec<usize> = places.iter().map(|&(_, mbs, _)| layout.slice_len(mbs)).collect();
+    let mut coefficients = COEFFICIENTS.with_borrow_mut(std::mem::take);
+    coefficients.resize(lens.iter().sum(), 0.0);
+    let alphas = {
+        let mut chunks = Vec::with_capacity(places.len());
+        let mut rest = &mut coefficients[..];
+        for &len in &lens {
+            let (chunk, r) = rest.split_at_mut(len);
+            chunks.push(Mutex::new(Some(chunk)));
+            rest = r;
+        }
+        pool::map(threads, places.len(), |i| {
+            let (mb_x, mbs, mb_y) = places[i];
+            let chunk = chunks[i].lock().unwrap_or_else(|e| e.into_inner()).take().expect("each slice once");
+            layout.transform(mb_x, mbs, mb_y, chunk)
+        })
     };
+    let mut slices = Vec::with_capacity(places.len());
+    let mut rest = &coefficients[..];
+    for ((&(_, mbs, _), &len), alpha) in places.iter().zip(&lens).zip(alphas) {
+        let (chunk, r) = rest.split_at(len);
+        rest = r;
+        slices.push(SliceBlocks { mbs, comps: layout.components(mbs, chunk), alpha });
+    }
+    code_picture(hdr, &slices, scan, isa, log2_slice_mbs, budget, threads, out);
+    drop(slices);
+    COEFFICIENTS.with_borrow_mut(|c| *c = coefficients);
+}
+
+/// Rate control and coding of a transformed picture.
+#[allow(clippy::too_many_arguments)]
+fn code_picture(
+    hdr: &FrameHeader,
+    slices: &[SliceBlocks],
+    scan: &[u8; 64],
+    isa: Isa,
+    log2_slice_mbs: u32,
+    budget: usize,
+    threads: usize,
+    out: &mut Vec<u8>,
+) {
+    let header_bytes = if hdr.alpha != AlphaType::None { 8 } else { 6 };
+    let quantisers = Quantisers::new(&hdr.luma_weights(), &hdr.chroma_weights(), scan);
+    // A slice's coded size at a quantiser, and whether every size field
+    // (16 bits each) can hold it.
+    let slice_size = |s: &SliceBlocks, qi: u8| -> (usize, bool) {
+        SCRATCH.with_borrow_mut(|q| {
+            let mut comp = [0usize; 3];
+            for (plane, bytes) in comp.iter_mut().enumerate() {
+                q.quantise(isa, s.comps[plane], quantisers.get(qi, plane));
+                *bytes = coefficient_bits(q, s.comps[plane].len() / 64).div_ceil(8);
+            }
+            let total = header_bytes + comp.iter().sum::<usize>() + s.alpha.len();
+            (total, total <= 65535 && comp.iter().all(|&c| c <= 65535))
+        })
+    };
+    // Every slice's size at `qi`, in parallel.
+    let sizes_at = |qi: u8| pool::map(threads, slices.len(), |i| slice_size(&slices[i], qi));
 
     // The finest uniform quantiser that fits.
     let overhead = PICTURE_HEADER_SIZE + 2 * slices.len();
     // Alpha is lossless and comes on top of the profile's rate.
     let alpha_bytes: usize = slices.iter().map(|s| s.alpha.len()).sum();
     let budget = (budget + alpha_bytes).saturating_sub(overhead);
-    let totals = |qi: u8, scratch: &mut Vec<i32>| -> (Vec<usize>, bool) {
-        let mut ok = true;
-        let v = slices
-            .iter()
-            .map(|s| {
-                let (n, fits) = slice_size(s, qi, scratch);
-                ok &= fits;
-                n
-            })
-            .collect::<Vec<_>>();
-        let sum: usize = v.iter().sum();
-        (v, ok && sum <= budget)
+    let totals = |qi: u8| -> (Vec<usize>, bool) {
+        let v = sizes_at(qi);
+        let ok = v.iter().all(|&(_, fits)| fits) && v.iter().map(|&(n, _)| n).sum::<usize>() <= budget;
+        (v.into_iter().map(|(n, _)| n).collect(), ok)
     };
     let (mut lo, mut hi) = (1u8, 224u8);
-    let mut best = totals(224, &mut scratch);
+    let mut best = totals(224);
     if best.1 {
         // Invariant: `hi` fits, with `best` its sizes; find the smallest that does.
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            let t = totals(mid, &mut scratch);
+            let t = totals(mid);
             if t.1 {
                 hi = mid;
                 best = t;
@@ -453,63 +603,77 @@ fn encode_picture(hdr: &FrameHeader, index: usize, frame: &Frame, log2_slice_mbs
         }
     }
     let uniform = hi;
-    let base_sizes = best.0;
+    let mut used = best.0;
 
-    // Per-slice refinement: hand out the slack.
+    // Per-slice refinement: hand out the slack, slice by slice, each
+    // slice's share in proportion to its macroblocks (what one slice leaves
+    // goes to those after it), and each slice steps to finer quantisers
+    // while it fits its share. The uniform quantiser's slack is under one
+    // step for the picture, so few slices move more than a step or two:
+    // their sizes at the next `WINDOW` quantisers are found in parallel
+    // first, and the hand-out, which is sequential, rarely codes anything.
+    const WINDOW: usize = 3;
     let mut qindices = vec![uniform; slices.len()];
-    if uniform > 1 && base_sizes.iter().sum::<usize>() <= budget {
+    if uniform > 1 && best.1 {
+        let window = (uniform as usize - 1).min(WINDOW);
+        let finer: Vec<[(usize, bool); WINDOW]> = pool::map(threads, slices.len(), |i| {
+            std::array::from_fn(|j| if j < window { slice_size(&slices[i], uniform - 1 - j as u8) } else { (0, false) })
+        });
         let mut remaining_budget = budget;
-        let mut remaining_base: usize = base_sizes.iter().sum();
+        let mut remaining_base: usize = used.iter().sum();
         let mut remaining_mbs: u64 = slices.iter().map(|s| s.mbs as u64).sum();
         for (i, s) in slices.iter().enumerate() {
+            let base = used[i];
             let slack = (remaining_budget - remaining_base) as u64;
-            let allowed = base_sizes[i] + (slack * s.mbs as u64 / remaining_mbs) as usize;
-            let (mut lo, mut hi) = (1u8, uniform);
-            let mut used = base_sizes[i];
-            while lo < hi {
-                let mid = lo + (hi - lo) / 2;
-                let (n, fits) = slice_size(s, mid, &mut scratch);
-                if fits && n <= allowed {
-                    hi = mid;
-                    used = n;
-                } else {
-                    lo = mid + 1;
+            let allowed = base + (slack * s.mbs as u64 / remaining_mbs) as usize;
+            let mut qi = uniform;
+            while qi > 1 {
+                let step = (uniform - qi) as usize;
+                let (n, fits) = if step < window { finer[i][step] } else { slice_size(s, qi - 1) };
+                if !(fits && n <= allowed) {
+                    break;
                 }
+                qi -= 1;
+                used[i] = n;
             }
-            qindices[i] = hi;
-            remaining_budget -= used;
-            remaining_base -= base_sizes[i];
+            qindices[i] = qi;
+            remaining_budget -= used[i];
+            remaining_base -= base;
             remaining_mbs -= s.mbs as u64;
         }
     }
 
-    // Write the picture.
+    // Code every slice, in parallel, then write the picture.
+    let coded = pool::map(threads, slices.len(), |i| {
+        let (s, qi) = (&slices[i], qindices[i]);
+        let mut bytes = Vec::with_capacity(used[i]);
+        bytes.push((header_bytes as u8) << 3);
+        bytes.push(qi);
+        bytes.resize(header_bytes, 0);
+        let mut comp_sizes = [0usize; 3];
+        SCRATCH.with_borrow_mut(|q| {
+            for (plane, size) in comp_sizes.iter_mut().enumerate() {
+                q.quantise(isa, s.comps[plane], quantisers.get(qi, plane));
+                let mut bw = BitWriter::new(&mut bytes);
+                encode_coefficients_masked(&mut bw, q, s.comps[plane].len() / 64);
+                *size = bw.finish();
+            }
+        });
+        bytes[2..4].copy_from_slice(&(comp_sizes[0] as u16).to_be_bytes());
+        bytes[4..6].copy_from_slice(&(comp_sizes[1] as u16).to_be_bytes());
+        if header_bytes == 8 {
+            bytes[6..8].copy_from_slice(&(comp_sizes[2] as u16).to_be_bytes());
+        }
+        bytes.extend_from_slice(&s.alpha);
+        bytes
+    });
     let pic_start = out.len();
     PictureHeader::write(out, 0, slices.len(), log2_slice_mbs);
-    let table = out.len();
-    out.resize(table + 2 * slices.len(), 0);
-    for (k, (s, &qi)) in slices.iter().zip(&qindices).enumerate() {
-        let start = out.len();
-        out.push((header_bytes as u8) << 3);
-        out.push(qi);
-        out.resize(start + header_bytes, 0);
-        let q = qscale(qi);
-        let mut comp_sizes = [0usize; 3];
-        for (plane, size) in comp_sizes.iter_mut().enumerate() {
-            let w = if plane == 0 { &luma_w } else { &chroma_w };
-            quantise(&s.comps[plane], w, q, scan, &mut scratch);
-            let mut bw = BitWriter::new(out);
-            encode_coefficients(&mut bw, &scratch, s.comps[plane].len());
-            *size = bw.finish();
-        }
-        out[start + 2..start + 4].copy_from_slice(&(comp_sizes[0] as u16).to_be_bytes());
-        out[start + 4..start + 6].copy_from_slice(&(comp_sizes[1] as u16).to_be_bytes());
-        if header_bytes == 8 {
-            out[start + 6..start + 8].copy_from_slice(&(comp_sizes[2] as u16).to_be_bytes());
-        }
-        out.extend_from_slice(&s.alpha);
-        let size = (out.len() - start) as u16;
-        out[table + 2 * k..table + 2 * k + 2].copy_from_slice(&size.to_be_bytes());
+    for s in &coded {
+        out.extend_from_slice(&(s.len() as u16).to_be_bytes());
+    }
+    for s in &coded {
+        out.extend_from_slice(s);
     }
     let picture_size = (out.len() - pic_start) as u32;
     out[pic_start + 1..pic_start + 5].copy_from_slice(&picture_size.to_be_bytes());
@@ -533,17 +697,17 @@ fn slice_alpha(
     step: usize,
 ) -> Vec<u8> {
     let width = frame.width as usize;
-    let max_in = (1u64 << frame.bit_depth) - 1;
-    let max_out = (1u64 << bits) - 1;
+    let max_in = u16::MAX >> (16 - frame.bit_depth);
+    // round(max_out · a ÷ max_in)
+    let convert = Rescale::new(frame.bit_depth, bits);
     let cols = 16 * mbs as usize;
     let x0 = 16 * mb_x as usize;
     let mut values = Vec::with_capacity(cols * 16);
     for r in 0..16 {
         let row = first_row + step * (16 * mb_y + r).min(height - 1);
         for n in 0..cols {
-            let a = (alpha[row * width + (x0 + n).min(width - 1)] as u64).min(max_in);
-            // round(max_out · a ÷ max_in)
-            values.push(((2 * max_out * a + max_in) / (2 * max_in)) as u16);
+            let a = alpha[row * width + (x0 + n).min(width - 1)].min(max_in);
+            values.push(convert.apply(a));
         }
     }
     let mut out = Vec::new();
@@ -586,6 +750,24 @@ mod tests {
                 let mut got = vec![0i32; n_blocks * 64];
                 decode_coefficients(&bytes, n_blocks, &mut got).unwrap();
                 assert_eq!(got, c);
+                // The rate control's count is what the writer writes.
+                let mut mask = vec![0u64; n_blocks];
+                for (i, &v) in c.iter().enumerate() {
+                    mask[i / 64] |= ((v != 0) as u64) << (i % 64);
+                }
+                let q = Quantised { values: c.clone(), mask };
+                assert_eq!(coefficient_bits(&q, n_blocks).div_ceil(8), bytes.len());
+                // And the decoder's block layout is the scan, undone.
+                for scan in [&PROGRESSIVE_SCAN, &INTERLACED_SCAN] {
+                    let unscan = crate::decode::inverse_scan(scan);
+                    let mut blocks = vec![0i32; n_blocks * 64];
+                    crate::decode::decode_coefficients_raster(&bytes, n_blocks, &unscan, &mut blocks).unwrap();
+                    for b in 0..n_blocks {
+                        for k in 0..64 {
+                            assert_eq!(blocks[64 * b + k], c[n_blocks * scan[k] as usize + b]);
+                        }
+                    }
+                }
             }
         }
     }

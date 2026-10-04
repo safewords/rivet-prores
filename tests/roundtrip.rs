@@ -158,7 +158,12 @@ fn fields_land_on_their_own_rows() {
 /// 8-bit alpha carries 8-bit input exactly.
 #[test]
 fn alpha_is_lossless() {
-    let cases = [(12, AlphaType::Bits16, 12), (16, AlphaType::Bits16, 16), (8, AlphaType::Bits8, 8), (10, AlphaType::Bits16, 10)];
+    let cases = [
+        (12, AlphaType::Bits16, 12),
+        (16, AlphaType::Bits16, 16),
+        (8, AlphaType::Bits8, 8),
+        (10, AlphaType::Bits16, 10),
+    ];
     for (depth, alpha_type, out_depth) in cases {
         for interlace in [Interlace::Progressive, Interlace::TopFieldFirst] {
             let mut frame = test_frame(97, 41, ChromaFormat::Yuv444, depth, 4, 5);
@@ -390,4 +395,38 @@ fn extremes_clip_instead_of_wrapping() {
     let (_, decoded) = round_trip(&frame, Config::new(Profile::Proxy));
     let p = psnr_samples(&frame.data, &decoded.data, 10);
     assert!(p > 20.0, "{p}");
+}
+
+/// Slices are coded and decoded in parallel: the bytes and the pictures do
+/// not depend on the thread count, nor does the error a damaged frame
+/// gives.
+#[test]
+fn thread_count_changes_nothing() {
+    let mut cases = Vec::new();
+    cases.push((test_frame(333, 75, ChromaFormat::Yuv422, 10, 20, 3), Config::new(Profile::Hq)));
+    let mut f = test_frame(250, 131, ChromaFormat::Yuv444, 12, 20, 4);
+    f.interlace = Interlace::BottomFieldFirst;
+    f.alpha = Some((0..250 * 131).map(|i| (i * 13 % 4096) as u16).collect());
+    cases.push((f.clone(), Config::new(Profile::P4444Xq)));
+    let config = Config { alpha: AlphaType::Bits8, log2_slice_mbs: 1, ..Config::new(Profile::P4444) };
+    cases.push((f, config));
+    let config = Config { luma_matrix: Some([7; 64]), chroma_matrix: Some([11; 64]), ..Config::new(Profile::Lt) };
+    cases.push((test_frame(1280, 720, ChromaFormat::Yuv422, 10, 30, 5), config));
+    for (frame, config) in cases {
+        let one = Encoder::new(Config { threads: 1, ..config.clone() }).encode(&frame).unwrap();
+        let picture = Decoder::new().with_threads(1).decode(&one).unwrap();
+        let mut damaged = one.clone();
+        let n = damaged.len();
+        for b in &mut damaged[n / 2..n / 2 + 64] {
+            *b ^= 0x5a;
+        }
+        let damaged_result = Decoder::new().with_threads(1).decode(&damaged).map(|f| f.data);
+        for threads in [0, 2, 3, 16] {
+            let packet = Encoder::new(Config { threads, ..config.clone() }).encode(&frame).unwrap();
+            assert!(packet == one, "{threads} threads: different bytes");
+            assert_eq!(Decoder::new().with_threads(threads).decode(&one).unwrap(), picture, "{threads} threads");
+            let result = Decoder::new().with_threads(threads).decode(&damaged).map(|f| f.data);
+            assert_eq!(result, damaged_result, "{threads} threads, damaged");
+        }
+    }
 }

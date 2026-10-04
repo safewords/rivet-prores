@@ -202,6 +202,15 @@ impl Frame {
     /// progressive, metadata unspecified. Fill its planes with
     /// [`Frame::plane_mut`].
     pub fn new(width: u32, height: u32, chroma: ChromaFormat, bit_depth: u32) -> Result<Frame> {
+        let mut f = Frame::zeroed(width, height, chroma, bit_depth)?;
+        f.data.fill(1 << (bit_depth - 1));
+        Ok(f)
+    }
+
+    /// [`Frame::new`] with every sample 0, for the decoder, which writes
+    /// every sample: zeroed memory comes from the allocator untouched,
+    /// which writing grey to it does not.
+    pub(crate) fn zeroed(width: u32, height: u32, chroma: ChromaFormat, bit_depth: u32) -> Result<Frame> {
         if width == 0 || height == 0 || width > 65535 || height > 65535 {
             return Err(config(format!("a frame of {width}×{height} cannot be coded (1–65535 each way)")));
         }
@@ -217,7 +226,7 @@ impl Frame {
             chroma,
             interlace: Interlace::Progressive,
             metadata: Metadata::default(),
-            data: vec![1 << (bit_depth - 1); total],
+            data: vec![0; total],
             planes,
             alpha: None,
         })

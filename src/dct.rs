@@ -8,7 +8,7 @@
 use std::sync::LazyLock;
 
 /// `BASIS[8 * x + u]` = T[x][u].
-static BASIS: LazyLock<[f32; 64]> = LazyLock::new(|| {
+pub(crate) static BASIS: LazyLock<[f32; 64]> = LazyLock::new(|| {
     let mut t = [0f32; 64];
     for x in 0..8 {
         for u in 0..8 {
@@ -19,6 +19,11 @@ static BASIS: LazyLock<[f32; 64]> = LazyLock::new(|| {
     }
     t
 });
+
+/// `BASIS_T[8 * u + x]` = T[x][u]: the basis transposed, for the SIMD
+/// kernels' row pass of the IDCT (a vector across `x` per `u`).
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub(crate) static BASIS_T: LazyLock<[f32; 64]> = LazyLock::new(|| std::array::from_fn(|i| BASIS[8 * (i % 8) + i / 8]));
 
 /// Inverse DCT. `coef` holds F[v][u] at `8 * v + u`; the result holds
 /// f[y][x] at `8 * y + x`.
