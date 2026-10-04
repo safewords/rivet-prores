@@ -97,11 +97,45 @@ fits the picture's budget, and the bytes it leaves are shared out slice by
 slice, each taking the finest quantiser that fits its share. A frame
 therefore lands just under its target (unless even the coarsest quantiser
 cannot reach it, or a simple picture needs far less), with near-uniform
-quality across it. 1080p 422 HQ encodes in about 250 ms on one core.
+quality across it.
 
 Not done (an encoder is free to leave them out): perceptual quantisation
-matrices (the default flat matrix is used unless the caller loads one),
-adaptive quantisation by content, and multi-threading.
+matrices (the default flat matrix is used unless the caller loads one) and
+adaptive quantisation by content.
+
+## Speed
+
+Slices are independent (§4), so both directions run slice-parallel on a
+pool of worker threads shared by every encoder and decoder in the process:
+`Decoder::with_threads(n)` and `Config::threads` (0, the default, is one
+per CPU; 1 keeps everything on the calling thread). The block arithmetic —
+inverse quantisation, IDCT and sample conversion; sample conversion and
+FDCT; quantisation — has SSE4.1, AVX2 and NEON versions picked at run time,
+which do the scalar code's single-precision operations in the same order
+(multiply, then add; never fused), so the output is bit-identical whatever
+the CPU, the SIMD level or the thread count. `PRORES_FORCE_SCALAR=1` forces
+the scalar code; CI runs the tests both ways on x86-64 and arm64.
+
+Frames per second on a Ryzen 9 9950X (16 cores, 32 threads), synthetic
+pictures with grain (`examples/bench.rs`), measured 2026-10-04; "before" is
+the single-threaded scalar code of 64544da, whose output is byte-for-byte
+the same:
+
+| | before | 1 thread | 32 threads |
+|---|---|---|---|
+| 422 HQ 1280×720, encode | 12 | 79 | 425 |
+| 422 HQ 1280×720, decode | 60 | 203 | 913 |
+| 422 HQ 1920×1080, encode | 4.8 | 34 | 244 |
+| 422 HQ 1920×1080, decode | 22 | 82 | 501 |
+| 4444 + 16-bit alpha 1280×720, encode | 8.2 | 55 | 353 |
+| 4444 + 16-bit alpha 1280×720, decode | 30 | 112 | 552 |
+| 4444 + 16-bit alpha 1920×1080, encode | 3.1 | 23 | 179 |
+| 4444 + 16-bit alpha 1920×1080, decode | 14 | 46 | 332 |
+
+```sh
+cargo run --release --example bench -- 1080p hq 0 5     # size, hq|4444a, threads, runs
+cargo run --release --features bench --example kernels  # each kernel at each SIMD level
+```
 
 ## How it is checked
 
