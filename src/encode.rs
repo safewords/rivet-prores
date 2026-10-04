@@ -243,6 +243,9 @@ impl Encoder {
         let mut out = Vec::new();
         hdr.write(&mut out);
         let target = cfg.target_frame_bytes.unwrap_or_else(|| cfg.profile.target_frame_bytes(frame.width, frame.height));
+        // Room for the frame at its target (alpha comes on top), so the
+        // buffer is not regrown — and its new pages faulted in — piecemeal.
+        out.reserve(target.saturating_sub(out.len()));
         let pictures = hdr.picture_count();
         let per_picture = target.saturating_sub(out.len()) / pictures;
         for index in 0..pictures {
@@ -529,7 +532,7 @@ fn encode_picture(
             chunks.push(Mutex::new(Some(chunk)));
             rest = r;
         }
-        pool::map(threads, places.len(), |i| {
+        pool::map_small(threads, places.len(), |i| {
             let (mb_x, mbs, mb_y) = places[i];
             let chunk = chunks[i].lock().unwrap_or_else(|e| e.into_inner()).take().expect("each slice once");
             layout.transform(mb_x, mbs, mb_y, chunk)
@@ -575,7 +578,7 @@ fn code_picture(
         })
     };
     // Every slice's size at `qi`, in parallel.
-    let sizes_at = |qi: u8| pool::map(threads, slices.len(), |i| slice_size(&slices[i], qi));
+    let sizes_at = |qi: u8| pool::map_small(threads, slices.len(), |i| slice_size(&slices[i], qi));
 
     // The finest uniform quantiser that fits.
     let overhead = PICTURE_HEADER_SIZE + 2 * slices.len();
@@ -644,7 +647,7 @@ fn code_picture(
             if candidates.is_empty() {
                 break;
             }
-            let found = pool::map(threads, candidates.len(), |c| slice_size(&slices[candidates[c]], qi));
+            let found = pool::map_small(threads, candidates.len(), |c| slice_size(&slices[candidates[c]], qi));
             let mut row = vec![None; slices.len()];
             for (&i, size) in candidates.iter().zip(found) {
                 row[i] = Some(size);
@@ -679,7 +682,7 @@ fn code_picture(
     }
 
     // Code every slice, in parallel, then write the picture.
-    let coded = pool::map(threads, slices.len(), |i| {
+    let coded = pool::map_small(threads, slices.len(), |i| {
         let (s, qi) = (&slices[i], qindices[i]);
         let mut bytes = Vec::with_capacity(used[i]);
         bytes.push((header_bytes as u8) << 3);

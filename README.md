@@ -118,20 +118,24 @@ the scalar code; CI runs the tests both ways on x86-64 (aarch64 by hand,
 see "NEON on ARM hardware").
 
 Frames per second on a Ryzen 9 9950X (16 cores, 32 threads), synthetic
-pictures with grain (`examples/bench.rs`), measured 2026-10-04; "before" is
-the single-threaded scalar code of 64544da, whose output is byte-for-byte
-the same:
+pictures with grain (`examples/bench.rs`), measured 2026-10-04 (32-thread
+column 2026-10-05, at about 12 % background load); "before" is the
+single-threaded scalar code of 64544da, whose output is byte-for-byte the
+same. More threads never cost speed: a new picture's pages are faulted in on
+a few threads before many decode into it (page faults on one allocation
+contend in the kernel), and an encoder's short slice tasks are claimed a few
+at a time:
 
 | | before | 1 thread | 32 threads |
 |---|---|---|---|
-| 422 HQ 1280×720, encode | 12 | 79 | 425 |
-| 422 HQ 1280×720, decode | 60 | 203 | 913 |
-| 422 HQ 1920×1080, encode | 4.8 | 34 | 244 |
-| 422 HQ 1920×1080, decode | 22 | 82 | 501 |
-| 4444 + 16-bit alpha 1280×720, encode | 8.2 | 55 | 353 |
-| 4444 + 16-bit alpha 1280×720, decode | 30 | 112 | 552 |
-| 4444 + 16-bit alpha 1920×1080, encode | 3.1 | 23 | 179 |
-| 4444 + 16-bit alpha 1920×1080, decode | 14 | 46 | 332 |
+| 422 HQ 1280×720, encode | 12 | 79 | 524 |
+| 422 HQ 1280×720, decode | 60 | 203 | 1737 |
+| 422 HQ 1920×1080, encode | 4.8 | 34 | 296 |
+| 422 HQ 1920×1080, decode | 22 | 82 | 907 |
+| 4444 + 16-bit alpha 1280×720, encode | 8.2 | 55 | 398 |
+| 4444 + 16-bit alpha 1280×720, decode | 30 | 112 | 975 |
+| 4444 + 16-bit alpha 1920×1080, encode | 3.1 | 23 | 202 |
+| 4444 + 16-bit alpha 1920×1080, decode | 14 | 46 | 534 |
 
 ```sh
 cargo run --release --example bench -- 1080p hq 0 5     # size, hq|4444a, threads, runs

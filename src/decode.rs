@@ -64,6 +64,16 @@ impl Decoder {
         if hdr.alpha != AlphaType::None {
             frame.alpha = Some(vec![0; frame.width as usize * frame.height as usize]);
         }
+        // The workers write every page of the new picture. Up to 8 of them
+        // fault pages in as cheaply as anything; more contend, so then the
+        // pages are faulted in first, on a few threads (`pool::prefault`).
+        if pool::resolve(self.threads) > 8 {
+            let mut buffers: Vec<&mut [u16]> = vec![&mut frame.data];
+            if let Some(alpha) = frame.alpha.as_mut() {
+                buffers.push(alpha);
+            }
+            pool::prefault(self.threads, &mut buffers);
+        }
         let data = &data[..hdr.frame_size as usize];
         let mut pos = 8 + hdr.header_size as usize;
         let ctx = Context::new(&hdr, bit_depth);
