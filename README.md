@@ -114,7 +114,8 @@ FDCT; quantisation — has SSE4.1, AVX2 and NEON versions picked at run time,
 which do the scalar code's single-precision operations in the same order
 (multiply, then add; never fused), so the output is bit-identical whatever
 the CPU, the SIMD level or the thread count. `PRORES_FORCE_SCALAR=1` forces
-the scalar code; CI runs the tests both ways on x86-64 and arm64.
+the scalar code; CI runs the tests both ways on x86-64 (aarch64 by hand,
+see "NEON on ARM hardware").
 
 Frames per second on a Ryzen 9 9950X (16 cores, 32 threads), synthetic
 pictures with grain (`examples/bench.rs`), measured 2026-10-04; "before" is
@@ -190,6 +191,20 @@ a black box.
   own frame size (about 255 000 bytes) they come back at 65 dB against
   Apple's decode. The file is fetched by CI, not committed: it is 100 MB and
   its host gives no licence beyond "freely accessible for testing".
+
+### NEON on ARM hardware
+
+CI runs on x86-64 Linux only, so the NEON (aarch64) code paths are not tested
+there. They are verified by hand on ARM hardware (an aarch64 Linux machine,
+or Apple silicon) after a change to them and before a release:
+
+```sh
+PRORES_REQUIRE_SIMD=1 cargo test --release
+PRORES_FORCE_SCALAR=1 cargo test --release
+```
+
+The first run checks the NEON kernels bit-exact against the scalar ones; the
+second runs everything on the scalar kernels.
 
 ## Provenance and licensing
 
