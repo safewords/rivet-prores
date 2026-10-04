@@ -582,43 +582,75 @@ fn code_picture(
     // Alpha is lossless and comes on top of the profile's rate.
     let alpha_bytes: usize = slices.iter().map(|s| s.alpha.len()).sum();
     let budget = (budget + alpha_bytes).saturating_sub(overhead);
-    let totals = |qi: u8| -> (Vec<usize>, bool) {
+    // Every probe's sizes, kept: the refinement below starts where the
+    // search ended, at sizes the search has usually found already.
+    let mut probed: Vec<Option<Vec<(usize, bool)>>> = vec![None; 225];
+    let mut totals = |qi: u8| -> bool {
         let v = sizes_at(qi);
         let ok = v.iter().all(|&(_, fits)| fits) && v.iter().map(|&(n, _)| n).sum::<usize>() <= budget;
-        (v.into_iter().map(|(n, _)| n).collect(), ok)
+        probed[qi as usize] = Some(v);
+        ok
     };
     let (mut lo, mut hi) = (1u8, 224u8);
-    let mut best = totals(224);
-    if best.1 {
-        // Invariant: `hi` fits, with `best` its sizes; find the smallest that does.
+    let fits_at_all = totals(224);
+    if fits_at_all {
+        // Invariant: `hi` fits; find the smallest that does.
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            let t = totals(mid);
-            if t.1 {
+            if totals(mid) {
                 hi = mid;
-                best = t;
             } else {
                 lo = mid + 1;
             }
         }
     }
     let uniform = hi;
-    let mut used = best.0;
+    let mut used: Vec<usize> = probed[uniform as usize].as_ref().expect("probed").iter().map(|&(n, _)| n).collect();
 
     // Per-slice refinement: hand out the slack, slice by slice, each
     // slice's share in proportion to its macroblocks (what one slice leaves
     // goes to those after it), and each slice steps to finer quantisers
     // while it fits its share. The uniform quantiser's slack is under one
-    // step for the picture, so few slices move more than a step or two:
-    // their sizes at the next `WINDOW` quantisers are found in parallel
-    // first, and the hand-out, which is sequential, rarely codes anything.
+    // step for the picture, so few slices move more than a step or two.
+    // Their sizes at the next few quantisers are found in parallel first —
+    // a step further only for the slices still under the most their share
+    // can be (the slack shared from them on, if no slice before them takes
+    // any) — and the hand-out, which is sequential, rarely codes anything
+    // itself. What is found beforehand only saves time: the hand-out codes
+    // whatever it needs and was not.
     const WINDOW: usize = 3;
     let mut qindices = vec![uniform; slices.len()];
-    if uniform > 1 && best.1 {
-        let window = (uniform as usize - 1).min(WINDOW);
-        let finer: Vec<[(usize, bool); WINDOW]> = pool::map(threads, slices.len(), |i| {
-            std::array::from_fn(|j| if j < window { slice_size(&slices[i], uniform - 1 - j as u8) } else { (0, false) })
-        });
+    if uniform > 1 && fits_at_all {
+        let slack = (budget - used.iter().sum::<usize>()) as u64;
+        // Macroblocks from each slice to the end.
+        let mut mbs_from = vec![0u64; slices.len() + 1];
+        for i in (0..slices.len()).rev() {
+            mbs_from[i] = mbs_from[i + 1] + slices[i].mbs as u64;
+        }
+        let most = |i: usize| used[i] + (slack * slices[i].mbs as u64 / mbs_from[i]) as usize;
+        // finer[j][i]: slice i at uniform − 1 − j, where found.
+        let mut finer: Vec<Vec<Option<(usize, bool)>>> = Vec::new();
+        for j in 0..(uniform as usize - 1).min(WINDOW) {
+            let qi = uniform - 1 - j as u8;
+            if j == 0 && let Some(v) = &probed[qi as usize] {
+                finer.push(v.iter().map(|&s| Some(s)).collect());
+                continue;
+            }
+            let wanted = |i: usize| match j {
+                0 => true,
+                _ => finer[j - 1][i].is_some_and(|(n, fits)| fits && n <= most(i)),
+            };
+            let candidates: Vec<usize> = (0..slices.len()).filter(|&i| wanted(i)).collect();
+            if candidates.is_empty() {
+                break;
+            }
+            let found = pool::map(threads, candidates.len(), |c| slice_size(&slices[candidates[c]], qi));
+            let mut row = vec![None; slices.len()];
+            for (&i, size) in candidates.iter().zip(found) {
+                row[i] = Some(size);
+            }
+            finer.push(row);
+        }
         let mut remaining_budget = budget;
         let mut remaining_base: usize = used.iter().sum();
         let mut remaining_mbs: u64 = slices.iter().map(|s| s.mbs as u64).sum();
@@ -629,7 +661,10 @@ fn code_picture(
             let mut qi = uniform;
             while qi > 1 {
                 let step = (uniform - qi) as usize;
-                let (n, fits) = if step < window { finer[i][step] } else { slice_size(s, qi - 1) };
+                let (n, fits) = match finer.get(step).and_then(|row| row[i]) {
+                    Some(size) => size,
+                    None => slice_size(s, qi - 1),
+                };
                 if !(fits && n <= allowed) {
                     break;
                 }
