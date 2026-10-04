@@ -29,7 +29,10 @@ fn name(isa: Isa) -> &'static str {
 }
 
 fn isa(level: &str) -> Isa {
-    Isa::available().into_iter().find(|&i| name(i) == level).expect("an available level")
+    Isa::available()
+        .into_iter()
+        .find(|&i| name(i) == level)
+        .expect("an available level")
 }
 
 fn best_ns(iters: usize, mut f: impl FnMut()) -> f64 {
@@ -92,8 +95,9 @@ fn component(n: usize) -> (Vec<f32>, [f32; 64], Quantised, Vec<u8>) {
 pub fn idct_put(level: &str, iters: usize) -> f64 {
     let isa = isa(level);
     let (_, _, q, _) = component(32);
-    let blocks: Vec<[i32; 64]> =
-        (0..32).map(|b| std::array::from_fn(|k| q.values[32 * PROGRESSIVE_SCAN[k] as usize + b])).collect();
+    let blocks: Vec<[i32; 64]> = (0..32)
+        .map(|b| std::array::from_fn(|k| q.values[32 * PROGRESSIVE_SCAN[k] as usize + b]))
+        .collect();
     let scale = [2.0f32; 64];
     let out = Output::new(10);
     let mut i = 0;
@@ -154,7 +158,8 @@ pub fn decode_coefficients(iters: usize) -> f64 {
     let mut out = vec![0i32; 64 * 32];
     best_ns(iters, || {
         out.fill(0);
-        crate::decode::decode_coefficients_raster(black_box(&bytes), 32, &unscan, &mut out).unwrap();
+        crate::decode::decode_coefficients_raster(black_box(&bytes), 32, &unscan, &mut out)
+            .unwrap();
         black_box(&out);
     })
 }

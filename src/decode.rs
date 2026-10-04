@@ -26,16 +26,24 @@ impl Decoder {
     /// 4:2:2 (the 422 profiles), 12 bits for 4:4:4 (the 4444 profiles).
     /// It decodes on one thread per CPU ([`Decoder::with_threads`]).
     pub fn new() -> Decoder {
-        Decoder { bit_depth: None, threads: 0 }
+        Decoder {
+            bit_depth: None,
+            threads: 0,
+        }
     }
 
     /// A decoder that outputs every frame at `bit_depth` bits (8–16),
     /// colour and alpha alike (§7.5 defines the conversion for any depth).
     pub fn with_bit_depth(bit_depth: u32) -> Result<Decoder> {
         if !(8..=16).contains(&bit_depth) {
-            return Err(config(format!("output bit depth {bit_depth} is outside 8–16")));
+            return Err(config(format!(
+                "output bit depth {bit_depth} is outside 8–16"
+            )));
         }
-        Ok(Decoder { bit_depth: Some(bit_depth), threads: 0 })
+        Ok(Decoder {
+            bit_depth: Some(bit_depth),
+            threads: 0,
+        })
     }
 
     /// Decodes on up to `threads` threads: the calling one and workers
@@ -78,9 +86,18 @@ impl Decoder {
         let mut pos = 8 + hdr.header_size as usize;
         let ctx = Context::new(&hdr, bit_depth);
         for index in 0..hdr.picture_count() {
-            let rest = data.get(pos..).ok_or_else(|| invalid("a picture starts past the end of the frame"))?;
+            let rest = data
+                .get(pos..)
+                .ok_or_else(|| invalid("a picture starts past the end of the frame"))?;
             let ph = PictureHeader::parse(rest)?;
-            decode_picture(&ctx, index, &ph, &rest[..ph.picture_size], &mut frame, self.threads)?;
+            decode_picture(
+                &ctx,
+                index,
+                &ph,
+                &rest[..ph.picture_size],
+                &mut frame,
+                self.threads,
+            )?;
             pos += ph.picture_size;
         }
         Ok(frame)
@@ -97,7 +114,8 @@ fn check_plausible_size(hdr: &FrameHeader) -> Result<()> {
     let width_in_mb = (hdr.width as u64).div_ceil(16);
     let mut need = 8 + hdr.header_size as u64;
     for index in 0..hdr.picture_count() {
-        let slices = slice_sizes(width_in_mb as u32, 3).len() as u64 * (hdr.picture_height(index) as u64).div_ceil(16);
+        let slices = slice_sizes(width_in_mb as u32, 3).len() as u64
+            * (hdr.picture_height(index) as u64).div_ceil(16);
         need += crate::header::PICTURE_HEADER_SIZE as u64 + 11 * slices;
     }
     if (hdr.frame_size as u64) < need {
@@ -185,14 +203,19 @@ fn decode_picture(
         .get(ph.header_size..ph.header_size + 2 * n_slices)
         .ok_or_else(|| invalid("the slice table runs past picture_size"))?;
     let (first_row, row_step) = hdr.picture_rows(index);
-    let place = Placement { height: height as usize, row_step };
+    let place = Placement {
+        height: height as usize,
+        row_step,
+    };
 
     // Locate every slice first (the table gives sizes, not offsets).
     let mut pos = ph.header_size + 2 * n_slices;
     let mut slices = Vec::with_capacity(n_slices);
     for k in 0..n_slices {
         let size = u16::from_be_bytes([table[2 * k], table[2 * k + 1]]) as usize;
-        let data = pic.get(pos..pos + size).ok_or_else(|| invalid("a slice runs past picture_size"))?;
+        let data = pic
+            .get(pos..pos + size)
+            .ok_or_else(|| invalid("a slice runs past picture_size"))?;
         slices.push(data);
         pos += size;
     }
@@ -205,32 +228,58 @@ fn decode_picture(
         let (y, rest) = frame.data.split_at_mut(frame.planes[1].offset);
         let (cb, cr) = rest.split_at_mut(frame.planes[2].offset - frame.planes[1].offset);
         let cr = &mut cr[..frame.planes[2].len()];
-        fn split(plane: &mut [u16], first_row: usize, band_rows: usize, w: usize) -> std::slice::ChunksMut<'_, u16> {
+        fn split(
+            plane: &mut [u16],
+            first_row: usize,
+            band_rows: usize,
+            w: usize,
+        ) -> std::slice::ChunksMut<'_, u16> {
             let start = (first_row * w).min(plane.len());
             plane[start..].chunks_mut(band_rows * w)
         }
         let split = |plane, w| split(plane, first_row, band_rows, w);
-        let (mut it_y, mut it_cb, mut it_cr) = (split(y, widths[0]), split(cb, widths[1]), split(cr, widths[2]));
+        let (mut it_y, mut it_cb, mut it_cr) = (
+            split(y, widths[0]),
+            split(cb, widths[1]),
+            split(cr, widths[2]),
+        );
         let mut it_a = frame.alpha.as_mut().map(|a| split(a, widths[0]));
         for _ in 0..height_in_mb {
             let (Some(py), Some(pcb), Some(pcr)) = (it_y.next(), it_cb.next(), it_cr.next()) else {
-                return Err(invalid("the picture has more rows of macroblocks than the frame"));
+                return Err(invalid(
+                    "the picture has more rows of macroblocks than the frame",
+                ));
             };
             let alpha = match &mut it_a {
-                Some(it) => Some(it.next().ok_or_else(|| invalid("the picture has more rows than the alpha"))?),
+                Some(it) => Some(
+                    it.next()
+                        .ok_or_else(|| invalid("the picture has more rows than the alpha"))?,
+                ),
                 None => None,
             };
-            bands.push(Mutex::new(Some(Band { planes: [py, pcb, pcr], widths, alpha })));
+            bands.push(Mutex::new(Some(Band {
+                planes: [py, pcb, pcr],
+                widths,
+                alpha,
+            })));
         }
     }
 
     let row_slices = sizes.len();
     let results = pool::map(threads, height_in_mb, |i| {
-        let mut band = bands[i].lock().unwrap_or_else(|e| e.into_inner()).take().expect("each band once");
+        let mut band = bands[i]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .expect("each band once");
         let mut scratch = Vec::new();
         let mut mb_x = 0u32;
         for (j, &mbs) in sizes.iter().enumerate() {
-            let slice = SliceRef { mb_x, mbs, data: slices[i * row_slices + j] };
+            let slice = SliceRef {
+                mb_x,
+                mbs,
+                data: slices[i * row_slices + j],
+            };
             decode_slice(ctx, slice, i, height_in_mb, place, &mut band, &mut scratch)?;
             mb_x += mbs;
         }
@@ -258,7 +307,9 @@ fn decode_slice(
     }
     let header_size = (s[0] >> 3) as usize;
     if header_size < min_header || header_size > s.len() {
-        return Err(invalid(format!("slice_header_size {header_size} is out of range")));
+        return Err(invalid(format!(
+            "slice_header_size {header_size} is out of range"
+        )));
     }
     let qindex = s[1];
     if !(1..=224).contains(&qindex) {
@@ -271,7 +322,8 @@ fn decode_slice(
     let cr_size = if has_alpha {
         u16::from_be_bytes([s[6], s[7]]) as usize
     } else {
-        body.checked_sub(y_size + cb_size).ok_or_else(|| invalid("slice component sizes exceed the slice"))?
+        body.checked_sub(y_size + cb_size)
+            .ok_or_else(|| invalid("slice component sizes exceed the slice"))?
     };
     if y_size + cb_size + cr_size > body {
         return Err(invalid("slice component sizes exceed the slice"));
@@ -304,7 +356,8 @@ fn decode_slice(
         let scale: [f32; 64] = std::array::from_fn(|k| (weights[k] as u32 * q) as f32 / 8.0);
         for (blk, coef) in coeffs.as_chunks::<64>().0.iter().enumerate() {
             let v = dsp::idct_put(ctx.isa, coef, &scale, ctx.output);
-            let (bx, by) = block_position(plane, hdr.chroma, mb_x, mb_y, blk / per_mb, blk % per_mb);
+            let (bx, by) =
+                block_position(plane, hdr.chroma, mb_x, mb_y, blk / per_mb, blk % per_mb);
             put_block(band, plane, bx, by - band_y, band_y, &v, place);
         }
     }
@@ -314,7 +367,11 @@ fn decode_slice(
         // 16 · mbs values (§5.3.3), like its colour; values outside the
         // picture are discarded (§7.5.3). A bottom slice that stops at the
         // picture's last row is read too: the rows below are not used.
-        let rows = if mb_y + 1 < height_in_mb { 16 } else { place.height - 16 * (height_in_mb - 1) };
+        let rows = if mb_y + 1 < height_in_mb {
+            16
+        } else {
+            place.height - 16 * (height_in_mb - 1)
+        };
         let cols = 16 * mbs as usize;
         let values = decode_alpha(alpha_data, hdr.alpha.bits(), cols * 16, cols * rows)?;
         // §7.5.2: round((2^b − 1) · alpha ÷ (2^bits − 1)).
@@ -358,7 +415,15 @@ pub(crate) fn block_position(
 /// Writes the samples of a block (§7.5.1, already converted) that fall
 /// inside the picture: `by` is the block's first row within the band,
 /// `band_y` the band's first picture row.
-fn put_block(band: &mut Band, plane: usize, bx: usize, by: usize, band_y: usize, v: &[u16; 64], place: Placement) {
+fn put_block(
+    band: &mut Band,
+    plane: usize,
+    bx: usize,
+    by: usize,
+    band_y: usize,
+    v: &[u16; 64],
+    place: Placement,
+) {
     let pw = band.widths[plane];
     if bx >= pw {
         return;
@@ -387,12 +452,19 @@ impl Rescale {
     pub(crate) fn new(bits_in: u32, bits_out: u32) -> Rescale {
         let (max_in, max_out) = ((1u64 << bits_in) - 1, (1u64 << bits_out) - 1);
         let m = (max_out << 40).div_ceil(max_in);
-        Rescale { m, identity: bits_in == bits_out }
+        Rescale {
+            m,
+            identity: bits_in == bits_out,
+        }
     }
 
     #[inline]
     pub(crate) fn apply(self, a: u16) -> u16 {
-        if self.identity { a } else { ((a as u64 * self.m + (1 << 39)) >> 40) as u16 }
+        if self.identity {
+            a
+        } else {
+            ((a as u64 * self.m + (1 << 39)) >> 40) as u16
+        }
     }
 }
 
@@ -419,7 +491,9 @@ fn decode_scanned(data: &[u8], n_blocks: usize, mut put: impl FnMut(usize, i32))
     for i in 1..n_blocks {
         let n = symbol_to_signed(vlc::dc_codebook(prev_diff).read(&mut r)?);
         let diff = if prev_diff < 0 { -n } else { n };
-        prev_dc = prev_dc.checked_add(diff).ok_or_else(|| invalid("a DC coefficient overflows"))?;
+        prev_dc = prev_dc
+            .checked_add(diff)
+            .ok_or_else(|| invalid("a DC coefficient overflows"))?;
         put(i, prev_dc);
         prev_diff = diff;
     }
@@ -486,12 +560,19 @@ pub(crate) fn decode_coefficients_raster(
     debug_assert!(n_blocks.is_power_of_two());
     let shift = n_blocks.trailing_zeros();
     let mask = n_blocks - 1;
-    decode_scanned(data, n_blocks, |n, v| out[((n & mask) << 6) | unscan[n >> shift] as usize] = v)
+    decode_scanned(data, n_blocks, |n, v| {
+        out[((n & mask) << 6) | unscan[n >> shift] as usize] = v
+    })
 }
 
 /// `scanned_alpha()` (§5.3.3, §7.1.2): `count` raster-scanned values, or,
 /// when the data ends first, at least the `needed` the caller uses.
-pub(crate) fn decode_alpha(data: &[u8], bits: u32, count: usize, needed: usize) -> Result<Vec<u16>> {
+pub(crate) fn decode_alpha(
+    data: &[u8],
+    bits: u32,
+    count: usize,
+    needed: usize,
+) -> Result<Vec<u16>> {
     let mut r = BitReader::new(data);
     let mask = (1i32 << bits) - 1;
     let mut out = Vec::with_capacity(count);
@@ -527,7 +608,11 @@ mod tests {
                 let (max_in, max_out) = ((1u64 << bits_in) - 1, (1u64 << bits_out) - 1);
                 for a in 0..=max_in {
                     let want = (2 * max_out * a + max_in) / (2 * max_in);
-                    assert_eq!(r.apply(a as u16) as u64, want, "{bits_in} → {bits_out}: {a}");
+                    assert_eq!(
+                        r.apply(a as u16) as u64,
+                        want,
+                        "{bits_in} → {bits_out}: {a}"
+                    );
                 }
             }
         }

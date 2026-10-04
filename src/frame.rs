@@ -133,8 +133,13 @@ impl Metadata {
     pub fn frame_rate_code_for(numerator: u32, denominator: u32) -> u8 {
         (1..=11)
             .find(|&c| {
-                let m = Metadata { frame_rate_code: c, ..Metadata::default() };
-                m.frame_rate().is_some_and(|(n, d)| n as u64 * denominator as u64 == numerator as u64 * d as u64)
+                let m = Metadata {
+                    frame_rate_code: c,
+                    ..Metadata::default()
+                };
+                m.frame_rate().is_some_and(|(n, d)| {
+                    n as u64 * denominator as u64 == numerator as u64 * d as u64
+                })
             })
             .unwrap_or(0)
     }
@@ -210,9 +215,16 @@ impl Frame {
     /// [`Frame::new`] with every sample 0, for the decoder, which writes
     /// every sample: zeroed memory comes from the allocator untouched,
     /// which writing grey to it does not.
-    pub(crate) fn zeroed(width: u32, height: u32, chroma: ChromaFormat, bit_depth: u32) -> Result<Frame> {
+    pub(crate) fn zeroed(
+        width: u32,
+        height: u32,
+        chroma: ChromaFormat,
+        bit_depth: u32,
+    ) -> Result<Frame> {
         if width == 0 || height == 0 || width > 65535 || height > 65535 {
-            return Err(config(format!("a frame of {width}×{height} cannot be coded (1–65535 each way)")));
+            return Err(config(format!(
+                "a frame of {width}×{height} cannot be coded (1–65535 each way)"
+            )));
         }
         if !(8..=16).contains(&bit_depth) {
             return Err(config(format!("bit depth {bit_depth} is outside 8–16")));
@@ -235,9 +247,21 @@ impl Frame {
     pub(crate) fn layout(width: u32, height: u32, chroma: ChromaFormat) -> [Plane; 3] {
         let (sw, _) = chroma.subsampling();
         let cw = width.div_ceil(sw);
-        let luma = Plane { offset: 0, width, height };
-        let cb = Plane { offset: luma.len(), width: cw, height };
-        let cr = Plane { offset: cb.offset + cb.len(), width: cw, height };
+        let luma = Plane {
+            offset: 0,
+            width,
+            height,
+        };
+        let cb = Plane {
+            offset: luma.len(),
+            width: cw,
+            height,
+        };
+        let cr = Plane {
+            offset: cb.offset + cb.len(),
+            width: cw,
+            height,
+        };
         [luma, cb, cr]
     }
 
@@ -274,10 +298,16 @@ impl Frame {
     /// say, so the encoder can index without bounds surprises.
     pub(crate) fn validate(&self) -> Result<()> {
         if self.width == 0 || self.height == 0 || self.width > 65535 || self.height > 65535 {
-            return Err(config(format!("a frame of {}×{} cannot be coded", self.width, self.height)));
+            return Err(config(format!(
+                "a frame of {}×{} cannot be coded",
+                self.width, self.height
+            )));
         }
         if !(8..=16).contains(&self.bit_depth) {
-            return Err(config(format!("bit depth {} is outside 8–16", self.bit_depth)));
+            return Err(config(format!(
+                "bit depth {} is outside 8–16",
+                self.bit_depth
+            )));
         }
         let want = Self::layout(self.width, self.height, self.chroma);
         for (i, (p, w)) in self.planes.iter().zip(want.iter()).enumerate() {
@@ -287,14 +317,24 @@ impl Frame {
                     p.width, p.height, self.chroma, self.width, self.height, w.width, w.height
                 )));
             }
-            if p.offset.checked_add(p.len()).is_none_or(|end| end > self.data.len()) {
-                return Err(config(format!("plane {i} runs past the end of the frame's data")));
+            if p.offset
+                .checked_add(p.len())
+                .is_none_or(|end| end > self.data.len())
+            {
+                return Err(config(format!(
+                    "plane {i} runs past the end of the frame's data"
+                )));
             }
         }
         if let Some(a) = &self.alpha
             && a.len() != self.width as usize * self.height as usize
         {
-            return Err(config(format!("the alpha plane has {} samples, not {}×{}", a.len(), self.width, self.height)));
+            return Err(config(format!(
+                "the alpha plane has {} samples, not {}×{}",
+                a.len(),
+                self.width,
+                self.height
+            )));
         }
         Ok(())
     }
@@ -310,7 +350,11 @@ mod tests {
         for (i, s) in f.data.iter_mut().enumerate() {
             *s = (i as u16).wrapping_mul(40503);
         }
-        let want: Vec<u8> = f.data.iter().flat_map(|s| [*s as u8, (*s >> 8) as u8]).collect();
+        let want: Vec<u8> = f
+            .data
+            .iter()
+            .flat_map(|s| [*s as u8, (*s >> 8) as u8])
+            .collect();
         assert_eq!(f.to_le_bytes(), want);
     }
 
@@ -326,7 +370,10 @@ mod tests {
     #[test]
     fn frame_rate_codes_round_trip() {
         for c in 1..=11u8 {
-            let m = Metadata { frame_rate_code: c, ..Metadata::default() };
+            let m = Metadata {
+                frame_rate_code: c,
+                ..Metadata::default()
+            };
             let (n, d) = m.frame_rate().unwrap();
             assert_eq!(Metadata::frame_rate_code_for(n, d), c);
         }

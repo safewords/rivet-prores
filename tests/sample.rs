@@ -43,7 +43,9 @@ fn frames(data: &[u8]) -> Vec<&[u8]> {
 #[test]
 fn apple_encoded_422_hq_interlaced() {
     let Ok(path) = std::env::var("PRORES_SAMPLE") else {
-        eprintln!("PRORES_SAMPLE is not set; skipping the Apple-encoded sample (see tests/sample.rs)");
+        eprintln!(
+            "PRORES_SAMPLE is not set; skipping the Apple-encoded sample (see tests/sample.rs)"
+        );
         return;
     };
     let data = std::fs::read(&path).unwrap();
@@ -62,7 +64,10 @@ fn apple_encoded_422_hq_interlaced() {
         let mean = |p: &[u16]| p.iter().map(|&v| v as f64).sum::<f64>() / p.len() as f64;
         let (y, cb, cr) = (mean(f.plane(0)), mean(f.plane(1)), mean(f.plane(2)));
         assert!((400.0..520.0).contains(&y), "Y′ mean {y}");
-        assert!((470.0..520.0).contains(&cb) && (510.0..560.0).contains(&cr), "chroma means {cb} {cr}");
+        assert!(
+            (470.0..520.0).contains(&cb) && (510.0..560.0).contains(&cr),
+            "chroma means {cb} {cr}"
+        );
         // Fields woven in the right order: neighbouring rows (the other
         // field) are closer than rows two apart only if each field sits on
         // its own rows and the two are in step.
@@ -78,10 +83,16 @@ fn apple_encoded_422_hq_interlaced() {
             s as f64 / ((h - 2) * w) as f64
         };
         let (adjacent, two_apart) = (diff(1), diff(2));
-        assert!(adjacent < two_apart, "rows: adjacent {adjacent}, two apart {two_apart}");
+        assert!(
+            adjacent < two_apart,
+            "rows: adjacent {adjacent}, two apart {two_apart}"
+        );
 
         // Through this crate's encoder at Apple's own frame size.
-        let config = Config { target_frame_bytes: Some(frame.len()), ..Config::new(Profile::Hq) };
+        let config = Config {
+            target_frame_bytes: Some(frame.len()),
+            ..Config::new(Profile::Hq)
+        };
         let ours = Encoder::new(config).encode(&f).unwrap();
         let again = Decoder::new().decode(&ours).unwrap();
         let p = psnr_all(&f, &again);

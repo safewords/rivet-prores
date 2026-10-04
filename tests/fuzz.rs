@@ -13,14 +13,26 @@ use std::sync::LazyLock;
 static SEEDS: LazyLock<Vec<Vec<u8>>> = LazyLock::new(|| {
     let mut out = Vec::new();
     let f = test_frame(40, 24, ChromaFormat::Yuv422, 10, 20, 1);
-    out.push(Encoder::new(Config::new(Profile::Standard)).encode(&f).unwrap());
+    out.push(
+        Encoder::new(Config::new(Profile::Standard))
+            .encode(&f)
+            .unwrap(),
+    );
     let mut f = test_frame(33, 21, ChromaFormat::Yuv444, 12, 20, 2);
     f.interlace = Interlace::TopFieldFirst;
     f.alpha = Some((0..33 * 21).map(|i| (i * 7 % 4096) as u16).collect());
-    let config = Config { luma_matrix: Some([5; 64]), chroma_matrix: Some([9; 64]), ..Config::new(Profile::P4444Xq) };
+    let config = Config {
+        luma_matrix: Some([5; 64]),
+        chroma_matrix: Some([9; 64]),
+        ..Config::new(Profile::P4444Xq)
+    };
     out.push(Encoder::new(config).encode(&f).unwrap());
     f.interlace = Interlace::Progressive;
-    let config = Config { alpha: AlphaType::Bits8, log2_slice_mbs: 0, ..Config::new(Profile::P4444) };
+    let config = Config {
+        alpha: AlphaType::Bits8,
+        log2_slice_mbs: 0,
+        ..Config::new(Profile::P4444)
+    };
     out.push(Encoder::new(config).encode(&f).unwrap());
     out
 });

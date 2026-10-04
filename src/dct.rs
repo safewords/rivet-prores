@@ -12,7 +12,11 @@ pub(crate) static BASIS: LazyLock<[f32; 64]> = LazyLock::new(|| {
     let mut t = [0f32; 64];
     for x in 0..8 {
         for u in 0..8 {
-            let c = if u == 0 { std::f64::consts::FRAC_1_SQRT_2 } else { 1.0 };
+            let c = if u == 0 {
+                std::f64::consts::FRAC_1_SQRT_2
+            } else {
+                1.0
+            };
             let a = ((2 * x + 1) * u) as f64 * std::f64::consts::PI / 16.0;
             t[8 * x + u] = (c / 2.0 * a.cos()) as f32;
         }
@@ -23,7 +27,8 @@ pub(crate) static BASIS: LazyLock<[f32; 64]> = LazyLock::new(|| {
 /// `BASIS_T[8 * u + x]` = T[x][u]: the basis transposed, for the SIMD
 /// kernels' row pass of the IDCT (a vector across `x` per `u`).
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-pub(crate) static BASIS_T: LazyLock<[f32; 64]> = LazyLock::new(|| std::array::from_fn(|i| BASIS[8 * (i % 8) + i / 8]));
+pub(crate) static BASIS_T: LazyLock<[f32; 64]> =
+    LazyLock::new(|| std::array::from_fn(|i| BASIS[8 * (i % 8) + i / 8]));
 
 /// Inverse DCT. `coef` holds F[v][u] at `8 * v + u`; the result holds
 /// f[y][x] at `8 * y + x`.
@@ -212,7 +217,12 @@ mod tests {
             let want = reference_fdct(&p);
             let got = fdct(&pf);
             for k in 0..64 {
-                assert!((want[k] - got[k] as f64).abs() < 2e-3, "{} {}", want[k], got[k]);
+                assert!(
+                    (want[k] - got[k] as f64).abs() < 2e-3,
+                    "{} {}",
+                    want[k],
+                    got[k]
+                );
             }
             let back = idct(&got);
             for k in 0..64 {

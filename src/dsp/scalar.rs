@@ -16,7 +16,14 @@ pub(crate) fn fdct_load(pix: &[u16; 64], scale: f32) -> [f32; 64] {
     fdct(&p)
 }
 
-pub(crate) fn quantise(f: &[f32], n: usize, inv: &[f32; 64], ac_rounding: f32, out: &mut [i32], mask: &mut [u64]) {
+pub(crate) fn quantise(
+    f: &[f32],
+    n: usize,
+    inv: &[f32; 64],
+    ac_rounding: f32,
+    out: &mut [i32],
+    mask: &mut [u64],
+) {
     mask.fill(0);
     for (s, &inv) in inv.iter().enumerate() {
         let r = if s == 0 { 0.5 } else { ac_rounding };

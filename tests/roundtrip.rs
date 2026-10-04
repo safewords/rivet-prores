@@ -6,12 +6,16 @@ mod common;
 
 use common::{Rng, psnr, psnr_all, psnr_samples, test_frame};
 use prores::{
-    AlphaType, ChromaFormat, Config, Decoder, Encoder, Error, Frame, FrameHeader, Interlace, Metadata, Profile,
+    AlphaType, ChromaFormat, Config, Decoder, Encoder, Error, Frame, FrameHeader, Interlace,
+    Metadata, Profile,
 };
 
 fn round_trip(frame: &Frame, config: Config) -> (Vec<u8>, Frame) {
     let packet = Encoder::new(config).encode(frame).unwrap();
-    let decoded = Decoder::with_bit_depth(frame.bit_depth).unwrap().decode(&packet).unwrap();
+    let decoded = Decoder::with_bit_depth(frame.bit_depth)
+        .unwrap()
+        .decode(&packet)
+        .unwrap();
     assert_eq!(decoded.width, frame.width);
     assert_eq!(decoded.height, frame.height);
     assert_eq!(decoded.chroma, frame.chroma);
@@ -23,12 +27,19 @@ fn round_trip(frame: &Frame, config: Config) -> (Vec<u8>, Frame) {
 }
 
 fn depth_for(profile: Profile) -> u32 {
-    if profile.chroma() == ChromaFormat::Yuv444 { 12 } else { 10 }
+    if profile.chroma() == ChromaFormat::Yuv444 {
+        12
+    } else {
+        10
+    }
 }
 
 /// A target large enough that the finest quantiser is chosen.
 fn unconstrained(profile: Profile) -> Config {
-    Config { target_frame_bytes: Some(1 << 30), ..Config::new(profile) }
+    Config {
+        target_frame_bytes: Some(1 << 30),
+        ..Config::new(profile)
+    }
 }
 
 /// Each profile at 1920×1080 on a grainy picture: within its target size
@@ -53,7 +64,10 @@ fn every_profile_meets_its_target_at_1080p() {
         assert!(packet.len() <= target, "{profile:?} overshoots its target");
         assert!(ratio > 0.98, "{profile:?} undershoots its target: {ratio}");
         assert!(p > 36.0, "{profile:?}: PSNR {p}");
-        assert!(p > last - 0.25, "{profile:?} is worse than the profile below it");
+        assert!(
+            p > last - 0.25,
+            "{profile:?} is worse than the profile below it"
+        );
         last = p;
     }
 }
@@ -75,7 +89,10 @@ fn clean_picture_quality_by_profile() {
         let (packet, decoded) = round_trip(&frame, Config::new(profile));
         let target = profile.target_frame_bytes(1280, 720);
         let p = psnr_all(&frame, &decoded);
-        eprintln!("{profile:?} 720p clean: {} bytes, target {target}, PSNR {p:.2} dB", packet.len());
+        eprintln!(
+            "{profile:?} 720p clean: {} bytes, target {target}, PSNR {p:.2} dB",
+            packet.len()
+        );
         assert!(packet.len() <= target);
         assert!(p > floor, "{profile:?}: PSNR {p} below {floor}");
     }
@@ -85,18 +102,34 @@ fn clean_picture_quality_by_profile() {
 /// lossless.
 #[test]
 fn finest_quantiser_is_nearly_lossless() {
-    for (chroma, depth, profile) in [(ChromaFormat::Yuv422, 10, Profile::Hq), (ChromaFormat::Yuv444, 12, Profile::P4444Xq)] {
+    for (chroma, depth, profile) in [
+        (ChromaFormat::Yuv422, 10, Profile::Hq),
+        (ChromaFormat::Yuv444, 12, Profile::P4444Xq),
+    ] {
         let frame = test_frame(256, 128, chroma, depth, 30, 11);
-        let config = Config { luma_matrix: Some([2; 64]), chroma_matrix: Some([2; 64]), ..unconstrained(profile) };
+        let config = Config {
+            luma_matrix: Some([2; 64]),
+            chroma_matrix: Some([2; 64]),
+            ..unconstrained(profile)
+        };
         let (packet, decoded) = round_trip(&frame, config);
         let hdr = FrameHeader::parse(&packet).unwrap();
         assert_eq!(hdr.luma_matrix, Some([2; 64]));
-        let max_err = frame.data.iter().zip(&decoded.data).map(|(&a, &b)| (a as i32 - b as i32).abs()).max().unwrap();
+        let max_err = frame
+            .data
+            .iter()
+            .zip(&decoded.data)
+            .map(|(&a, &b)| (a as i32 - b as i32).abs())
+            .max()
+            .unwrap();
         let p = psnr_all(&frame, &decoded);
         eprintln!("{profile:?} finest: PSNR {p:.2} dB, max error {max_err}");
         // The finest step is 1/4 in the 9-bit domain of §7.5.1: half an
         // LSB at 10 bits, two LSBs at 12.
-        assert!(max_err <= if depth == 10 { 1 } else { 4 }, "max error {max_err}");
+        assert!(
+            max_err <= if depth == 10 { 1 } else { 4 },
+            "max error {max_err}"
+        );
         assert!(p > 60.0);
     }
 }
@@ -105,19 +138,48 @@ fn finest_quantiser_is_nearly_lossless() {
 /// size, progressive and both field orders, both chroma formats.
 #[test]
 fn odd_sizes_slice_sizes_and_field_orders() {
-    let sizes = [(1, 1), (2, 2), (17, 9), (31, 33), (48, 16), (100, 37), (129, 75), (250, 19)];
+    let sizes = [
+        (1, 1),
+        (2, 2),
+        (17, 9),
+        (31, 33),
+        (48, 16),
+        (100, 37),
+        (129, 75),
+        (250, 19),
+    ];
     for (w, h) in sizes {
-        for (chroma, profile) in [(ChromaFormat::Yuv422, Profile::Hq), (ChromaFormat::Yuv444, Profile::P4444)] {
-            for interlace in [Interlace::Progressive, Interlace::TopFieldFirst, Interlace::BottomFieldFirst] {
+        for (chroma, profile) in [
+            (ChromaFormat::Yuv422, Profile::Hq),
+            (ChromaFormat::Yuv444, Profile::P4444),
+        ] {
+            for interlace in [
+                Interlace::Progressive,
+                Interlace::TopFieldFirst,
+                Interlace::BottomFieldFirst,
+            ] {
                 for log2 in 0..4 {
                     let mut frame = test_frame(w, h, chroma, depth_for(profile), 6, w * 131 + h);
                     frame.interlace = interlace;
-                    let config = Config { log2_slice_mbs: log2, ..unconstrained(profile) };
+                    let config = Config {
+                        log2_slice_mbs: log2,
+                        ..unconstrained(profile)
+                    };
                     let (packet, decoded) = round_trip(&frame, config);
                     let hdr = FrameHeader::parse(&packet).unwrap();
-                    assert_eq!(hdr.picture_count(), if interlace == Interlace::Progressive { 1 } else { 2 });
+                    assert_eq!(
+                        hdr.picture_count(),
+                        if interlace == Interlace::Progressive {
+                            1
+                        } else {
+                            2
+                        }
+                    );
                     let p = psnr_all(&frame, &decoded);
-                    assert!(p > 50.0, "{w}×{h} {chroma:?} {interlace:?} log2 {log2}: PSNR {p}");
+                    assert!(
+                        p > 50.0,
+                        "{w}×{h} {chroma:?} {interlace:?} log2 {log2}: PSNR {p}"
+                    );
                 }
             }
         }
@@ -136,12 +198,19 @@ fn fields_land_on_their_own_rows() {
             let w = frame.planes[plane].width as usize;
             for (i, s) in frame.plane_mut(plane).iter_mut().enumerate() {
                 let (x, y) = (i % w, i / w);
-                *s = if y % 2 == 0 { 100 + x as u16 } else { 900 - x as u16 };
+                *s = if y % 2 == 0 {
+                    100 + x as u16
+                } else {
+                    900 - x as u16
+                };
             }
         }
         let (packet, decoded) = round_trip(&frame, Config::new(Profile::Standard));
         let p = psnr_all(&frame, &decoded);
-        eprintln!("{interlace:?} striped fields: {} bytes, PSNR {p:.2} dB", packet.len());
+        eprintln!(
+            "{interlace:?} striped fields: {} bytes, PSNR {p:.2} dB",
+            packet.len()
+        );
         assert!(p > 50.0, "{interlace:?}: PSNR {p}");
         // Coded progressively, the same stripes are the worst case for a DCT.
         frame.interlace = Interlace::Progressive;
@@ -183,13 +252,23 @@ fn alpha_is_lossless() {
                 }
             }
             frame.alpha = Some(alpha.clone());
-            let config = Config { alpha: alpha_type, ..Config::new(Profile::P4444) };
+            let config = Config {
+                alpha: alpha_type,
+                ..Config::new(Profile::P4444)
+            };
             let packet = Encoder::new(config).encode(&frame).unwrap();
             let hdr = FrameHeader::parse(&packet).unwrap();
             assert_eq!(hdr.alpha, alpha_type);
             assert_eq!(hdr.bitstream_version, 1);
-            let decoded = Decoder::with_bit_depth(out_depth).unwrap().decode(&packet).unwrap();
-            assert_eq!(decoded.alpha.as_ref().unwrap(), &alpha, "{depth}-bit alpha as {alpha_type:?} {interlace:?}");
+            let decoded = Decoder::with_bit_depth(out_depth)
+                .unwrap()
+                .decode(&packet)
+                .unwrap();
+            assert_eq!(
+                decoded.alpha.as_ref().unwrap(),
+                &alpha,
+                "{depth}-bit alpha as {alpha_type:?} {interlace:?}"
+            );
             let p = psnr_all(&frame, &decoded);
             assert!(p > 40.0, "{depth}-bit {interlace:?}: PSNR {p}");
         }
@@ -204,9 +283,15 @@ fn alpha_is_lossless() {
 #[test]
 fn tiny_frames_get_their_share_per_macroblock() {
     let per_mb = |p: Profile| {
-        (p.target_frame_bytes(1920, 1080) - p.target_frame_bytes(1920, 1080 - 16 * 67)) as f64 / (120.0 * 67.0)
+        (p.target_frame_bytes(1920, 1080) - p.target_frame_bytes(1920, 1080 - 16 * 67)) as f64
+            / (120.0 * 67.0)
     };
-    for profile in [Profile::Proxy, Profile::Standard, Profile::Hq, Profile::P4444] {
+    for profile in [
+        Profile::Proxy,
+        Profile::Standard,
+        Profile::Hq,
+        Profile::P4444,
+    ] {
         let mb = per_mb(profile);
         for (w, h) in [(16u32, 16u32), (32, 32), (17, 9), (33, 31), (8, 40), (1, 1)] {
             let frame = test_frame(w, h, profile.chroma(), depth_for(profile), 8, w * 31 + h);
@@ -214,15 +299,25 @@ fn tiny_frames_get_their_share_per_macroblock() {
             let target = profile.target_frame_bytes(w, h);
             let mbs = (w.div_ceil(16) * h.div_ceil(16)) as f64;
             // The old rule: the 1080 frame's bytes scaled by area.
-            let area = (profile.target_frame_bytes(1920, 1080) as f64 * (w * h) as f64 / (1920.0 * 1080.0)) as usize;
-            let (_, old) = round_trip(&frame, Config { target_frame_bytes: Some(area), ..Config::new(profile) });
+            let area = (profile.target_frame_bytes(1920, 1080) as f64 * (w * h) as f64
+                / (1920.0 * 1080.0)) as usize;
+            let (_, old) = round_trip(
+                &frame,
+                Config {
+                    target_frame_bytes: Some(area),
+                    ..Config::new(profile)
+                },
+            );
             let (p, p_old) = (psnr_all(&frame, &decoded), psnr_all(&frame, &old));
             eprintln!(
                 "{profile:?} {w}×{h}: {} bytes (target {target}, area-scaled {area}), PSNR {p:.2} dB (area-scaled {p_old:.2} dB)",
                 packet.len()
             );
             assert!(packet.len() <= target, "{profile:?} {w}×{h} overshoots");
-            assert!((target as f64) > mb * mbs, "{profile:?} {w}×{h}: target {target} under {mb:.0} per macroblock");
+            assert!(
+                (target as f64) > mb * mbs,
+                "{profile:?} {w}×{h}: target {target} under {mb:.0} per macroblock"
+            );
             assert!(p >= p_old, "{profile:?} {w}×{h}: {p} < {p_old}");
         }
     }
@@ -240,13 +335,22 @@ fn alpha8_off_the_macroblock_grid() {
             let mut frame = test_frame(w, h, ChromaFormat::Yuv444, 8, 2, w ^ h);
             frame.interlace = interlace;
             // A vertical ramp: every row one value, so runs span rows.
-            let alpha: Vec<u16> = (0..h).flat_map(|y| (0..w).map(move |_| (y * 255 / (h - 1)) as u16)).collect();
+            let alpha: Vec<u16> = (0..h)
+                .flat_map(|y| (0..w).map(move |_| (y * 255 / (h - 1)) as u16))
+                .collect();
             frame.alpha = Some(alpha.clone());
             for profile in [Profile::P4444, Profile::P4444Xq] {
-                let config = Config { alpha: AlphaType::Bits8, ..Config::new(profile) };
+                let config = Config {
+                    alpha: AlphaType::Bits8,
+                    ..Config::new(profile)
+                };
                 let packet = Encoder::new(config).encode(&frame).unwrap();
                 let decoded = Decoder::with_bit_depth(8).unwrap().decode(&packet).unwrap();
-                assert_eq!(decoded.alpha.as_ref().unwrap(), &alpha, "{w}×{h} {interlace:?} {profile:?}");
+                assert_eq!(
+                    decoded.alpha.as_ref().unwrap(),
+                    &alpha,
+                    "{w}×{h} {interlace:?} {profile:?}"
+                );
             }
         }
     }
@@ -258,7 +362,9 @@ fn alpha_converts_to_the_output_depth() {
     let mut frame = test_frame(32, 16, ChromaFormat::Yuv444, 16, 0, 1);
     let alpha: Vec<u16> = (0..512u32).map(|i| (i * 128 + i % 7) as u16).collect();
     frame.alpha = Some(alpha.clone());
-    let packet = Encoder::new(Config::new(Profile::P4444)).encode(&frame).unwrap();
+    let packet = Encoder::new(Config::new(Profile::P4444))
+        .encode(&frame)
+        .unwrap();
     let decoded = Decoder::new().decode(&packet).unwrap();
     assert_eq!(decoded.bit_depth, 12);
     for (a, d) in alpha.iter().zip(decoded.alpha.unwrap()) {
@@ -280,12 +386,23 @@ fn custom_quantisation_matrices() {
         }
     }
     let frame = test_frame(320, 180, ChromaFormat::Yuv422, 10, 8, 21);
-    for (l, c) in [(Some(luma), Some(chroma)), (Some(luma), None), (None, Some(chroma))] {
-        let config = Config { luma_matrix: l, chroma_matrix: c, ..Config::new(Profile::Hq) };
+    for (l, c) in [
+        (Some(luma), Some(chroma)),
+        (Some(luma), None),
+        (None, Some(chroma)),
+    ] {
+        let config = Config {
+            luma_matrix: l,
+            chroma_matrix: c,
+            ..Config::new(Profile::Hq)
+        };
         let (packet, decoded) = round_trip(&frame, config);
         let hdr = FrameHeader::parse(&packet).unwrap();
         assert_eq!((hdr.luma_matrix, hdr.chroma_matrix), (l, c));
-        assert_eq!(hdr.header_size as usize, 20 + 64 * (l.is_some() as usize + c.is_some() as usize));
+        assert_eq!(
+            hdr.header_size as usize,
+            20 + 64 * (l.is_some() as usize + c.is_some() as usize)
+        );
         let p = psnr_all(&frame, &decoded);
         assert!(p > 40.0, "{p}");
         assert!(packet.len() <= Profile::Hq.target_frame_bytes(320, 180));
@@ -331,8 +448,13 @@ fn bit_depths_in_and_out() {
         assert!(p > 50.0, "{depth}-bit: {p}");
     }
     let frame = test_frame(64, 64, ChromaFormat::Yuv422, 10, 0, 4);
-    let packet = Encoder::new(unconstrained(Profile::Hq)).encode(&frame).unwrap();
-    let at16 = Decoder::with_bit_depth(16).unwrap().decode(&packet).unwrap();
+    let packet = Encoder::new(unconstrained(Profile::Hq))
+        .encode(&frame)
+        .unwrap();
+    let at16 = Decoder::with_bit_depth(16)
+        .unwrap()
+        .decode(&packet)
+        .unwrap();
     let at10 = Decoder::new().decode(&packet).unwrap();
     for (a, b) in at10.data.iter().zip(&at16.data) {
         assert!((*a as i32 - ((*b as i32 + 32) >> 6)).abs() <= 1);
@@ -346,28 +468,49 @@ fn encoder_refuses_what_it_cannot_code() {
     let f422 = Frame::new(32, 32, ChromaFormat::Yuv422, 10).unwrap();
     let f444 = Frame::new(32, 32, ChromaFormat::Yuv444, 12).unwrap();
     let is_config = |r: Result<Vec<u8>, Error>| matches!(r, Err(Error::Config(_)));
-    assert!(is_config(Encoder::new(Config::new(Profile::Hq)).encode(&f444)));
-    assert!(is_config(Encoder::new(Config::new(Profile::P4444)).encode(&f422)));
+    assert!(is_config(
+        Encoder::new(Config::new(Profile::Hq)).encode(&f444)
+    ));
+    assert!(is_config(
+        Encoder::new(Config::new(Profile::P4444)).encode(&f422)
+    ));
     let mut with_alpha = f422.clone();
     with_alpha.alpha = Some(vec![0; 32 * 32]);
-    assert!(is_config(Encoder::new(Config::new(Profile::Hq)).encode(&with_alpha)));
+    assert!(is_config(
+        Encoder::new(Config::new(Profile::Hq)).encode(&with_alpha)
+    ));
     let mut short_alpha = f444.clone();
     short_alpha.alpha = Some(vec![0; 10]);
-    assert!(is_config(Encoder::new(Config::new(Profile::P4444)).encode(&short_alpha)));
-    let bad_matrix = Config { luma_matrix: Some([1; 64]), ..Config::new(Profile::Hq) };
+    assert!(is_config(
+        Encoder::new(Config::new(Profile::P4444)).encode(&short_alpha)
+    ));
+    let bad_matrix = Config {
+        luma_matrix: Some([1; 64]),
+        ..Config::new(Profile::Hq)
+    };
     assert!(is_config(Encoder::new(bad_matrix).encode(&f422)));
-    let bad_slices = Config { log2_slice_mbs: 4, ..Config::new(Profile::Hq) };
+    let bad_slices = Config {
+        log2_slice_mbs: 4,
+        ..Config::new(Profile::Hq)
+    };
     assert!(is_config(Encoder::new(bad_slices).encode(&f422)));
     let mut truncated = f422.clone();
     truncated.data.truncate(100);
-    assert!(is_config(Encoder::new(Config::new(Profile::Hq)).encode(&truncated)));
+    assert!(is_config(
+        Encoder::new(Config::new(Profile::Hq)).encode(&truncated)
+    ));
     assert!(Frame::new(0, 1, ChromaFormat::Yuv422, 10).is_err());
     assert!(Frame::new(65536, 1, ChromaFormat::Yuv422, 10).is_err());
     assert!(Frame::new(1, 1, ChromaFormat::Yuv422, 7).is_err());
     // A 4444 frame with alpha and the alpha switched off codes no alpha.
     let mut a = f444.clone();
     a.alpha = Some(vec![7; 32 * 32]);
-    let packet = Encoder::new(Config { alpha: AlphaType::None, ..Config::new(Profile::P4444) }).encode(&a).unwrap();
+    let packet = Encoder::new(Config {
+        alpha: AlphaType::None,
+        ..Config::new(Profile::P4444)
+    })
+    .encode(&a)
+    .unwrap();
     assert!(Decoder::new().decode(&packet).unwrap().alpha.is_none());
 }
 
@@ -389,7 +532,11 @@ fn extremes_clip_instead_of_wrapping() {
     for plane in 0..3 {
         let w = frame.planes[plane].width as usize;
         for (i, s) in frame.plane_mut(plane).iter_mut().enumerate() {
-            *s = if ((i % w) / 3).is_multiple_of(2) { 0 } else { 1023 };
+            *s = if ((i % w) / 3).is_multiple_of(2) {
+                0
+            } else {
+                1023
+            };
         }
     }
     let (_, decoded) = round_trip(&frame, Config::new(Profile::Proxy));
@@ -403,29 +550,63 @@ fn extremes_clip_instead_of_wrapping() {
 #[test]
 fn thread_count_changes_nothing() {
     let mut cases = Vec::new();
-    cases.push((test_frame(333, 75, ChromaFormat::Yuv422, 10, 20, 3), Config::new(Profile::Hq)));
+    cases.push((
+        test_frame(333, 75, ChromaFormat::Yuv422, 10, 20, 3),
+        Config::new(Profile::Hq),
+    ));
     let mut f = test_frame(250, 131, ChromaFormat::Yuv444, 12, 20, 4);
     f.interlace = Interlace::BottomFieldFirst;
     f.alpha = Some((0..250 * 131).map(|i| (i * 13 % 4096) as u16).collect());
     cases.push((f.clone(), Config::new(Profile::P4444Xq)));
-    let config = Config { alpha: AlphaType::Bits8, log2_slice_mbs: 1, ..Config::new(Profile::P4444) };
+    let config = Config {
+        alpha: AlphaType::Bits8,
+        log2_slice_mbs: 1,
+        ..Config::new(Profile::P4444)
+    };
     cases.push((f, config));
-    let config = Config { luma_matrix: Some([7; 64]), chroma_matrix: Some([11; 64]), ..Config::new(Profile::Lt) };
-    cases.push((test_frame(1280, 720, ChromaFormat::Yuv422, 10, 30, 5), config));
+    let config = Config {
+        luma_matrix: Some([7; 64]),
+        chroma_matrix: Some([11; 64]),
+        ..Config::new(Profile::Lt)
+    };
+    cases.push((
+        test_frame(1280, 720, ChromaFormat::Yuv422, 10, 30, 5),
+        config,
+    ));
     for (frame, config) in cases {
-        let one = Encoder::new(Config { threads: 1, ..config.clone() }).encode(&frame).unwrap();
+        let one = Encoder::new(Config {
+            threads: 1,
+            ..config.clone()
+        })
+        .encode(&frame)
+        .unwrap();
         let picture = Decoder::new().with_threads(1).decode(&one).unwrap();
         let mut damaged = one.clone();
         let n = damaged.len();
         for b in &mut damaged[n / 2..n / 2 + 64] {
             *b ^= 0x5a;
         }
-        let damaged_result = Decoder::new().with_threads(1).decode(&damaged).map(|f| f.data);
+        let damaged_result = Decoder::new()
+            .with_threads(1)
+            .decode(&damaged)
+            .map(|f| f.data);
         for threads in [0, 2, 3, 16] {
-            let packet = Encoder::new(Config { threads, ..config.clone() }).encode(&frame).unwrap();
+            let packet = Encoder::new(Config {
+                threads,
+                ..config.clone()
+            })
+            .encode(&frame)
+            .unwrap();
             assert!(packet == one, "{threads} threads: different bytes");
-            assert_eq!(Decoder::new().with_threads(threads).decode(&one).unwrap(), picture, "{threads} threads");
-            let result = Decoder::new().with_threads(threads).decode(&damaged).map(|f| f.data);
+            assert_eq!(
+                Decoder::new().with_threads(threads).decode(&one).unwrap(),
+                picture,
+                "{threads} threads"
+            );
+            let result = Decoder::new()
+                .with_threads(threads)
+                .decode(&damaged)
+                .map(|f| f.data);
             assert_eq!(result, damaged_result, "{threads} threads, damaged");
         }
     }

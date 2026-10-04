@@ -127,8 +127,14 @@ fn halves_mut<T>(a: &mut [T; 8]) -> (&mut [T; 4], &mut [T; 4]) {
 #[inline]
 #[target_feature(enable = "avx2")]
 fn samples8(v: __m256, out: Output) -> __m256i {
-    let x = _mm256_add_ps(_mm256_mul_ps(v, _mm256_set1_ps(out.scale)), _mm256_set1_ps(out.bias));
-    let x = _mm256_min_ps(_mm256_max_ps(_mm256_floor_ps(x), _mm256_setzero_ps()), _mm256_set1_ps(out.max));
+    let x = _mm256_add_ps(
+        _mm256_mul_ps(v, _mm256_set1_ps(out.scale)),
+        _mm256_set1_ps(out.bias),
+    );
+    let x = _mm256_min_ps(
+        _mm256_max_ps(_mm256_floor_ps(x), _mm256_setzero_ps()),
+        _mm256_set1_ps(out.max),
+    );
     _mm256_cvttps_epi32(x)
 }
 
@@ -139,7 +145,10 @@ pub(super) fn idct_put_avx2(coef: &[i32; 64], scale: &[f32; 64], out: Output) ->
     let mut f = [0f32; 64];
     let (c, s) = (rows(coef), rows(scale));
     for (r, row) in rows_mut(&mut f).iter_mut().enumerate() {
-        st8(row, _mm256_mul_ps(_mm256_cvtepi32_ps(ld8i(&c[r])), ld8(&s[r])));
+        st8(
+            row,
+            _mm256_mul_ps(_mm256_cvtepi32_ps(ld8i(&c[r])), ld8(&s[r])),
+        );
     }
     // tmp[v] = Σu F[v][u] · T[·][u], a row across x.
     let btv: [__m256; 8] = std::array::from_fn(|u| ld8(&bt[u]));
@@ -164,7 +173,10 @@ pub(super) fn idct_put_avx2(coef: &[i32; 64], scale: &[f32; 64], out: Output) ->
         };
         let (a, b) = (row(2 * p), row(2 * p + 1));
         // packus works per 128-bit lane: a0-3 b0-3 a4-7 b4-7, reordered.
-        st16w(pair, _mm256_permute4x64_epi64::<0b11_01_10_00>(_mm256_packus_epi32(a, b)));
+        st16w(
+            pair,
+            _mm256_permute4x64_epi64::<0b11_01_10_00>(_mm256_packus_epi32(a, b)),
+        );
     }
     res
 }
@@ -176,7 +188,13 @@ pub(super) fn fdct_load_avx2(pix: &[u16; 64], scale: f32) -> [f32; 64] {
     let mut p = [0f32; 64];
     for (y, row) in rows_mut(&mut p).iter_mut().enumerate() {
         let s = _mm256_cvtepi32_ps(_mm256_cvtepu16_epi32(ld8w(&pr[y])));
-        st8(row, _mm256_sub_ps(_mm256_mul_ps(s, _mm256_set1_ps(scale)), _mm256_set1_ps(256.0)));
+        st8(
+            row,
+            _mm256_sub_ps(
+                _mm256_mul_ps(s, _mm256_set1_ps(scale)),
+                _mm256_set1_ps(256.0),
+            ),
+        );
     }
     // tmp[y] = Σx p[y][x] · T[x][·], a row across u.
     let tv: [__m256; 8] = std::array::from_fn(|x| ld8(&t[x]));
@@ -201,7 +219,14 @@ pub(super) fn fdct_load_avx2(pix: &[u16; 64], scale: f32) -> [f32; 64] {
 }
 
 #[target_feature(enable = "avx2")]
-pub(super) fn quantise_avx2(f: &[f32], n: usize, inv: &[f32; 64], ac_rounding: f32, out: &mut [i32], mask: &mut [u64]) {
+pub(super) fn quantise_avx2(
+    f: &[f32],
+    n: usize,
+    inv: &[f32; 64],
+    ac_rounding: f32,
+    out: &mut [i32],
+    mask: &mut [u64],
+) {
     mask.fill(0);
     let abs = _mm256_castsi256_ps(_mm256_set1_epi32(0x7fff_ffff));
     let zero = _mm256_setzero_ps();
@@ -216,7 +241,10 @@ pub(super) fn quantise_avx2(f: &[f32], n: usize, inv: &[f32; 64], ac_rounding: f
             let neg = _mm256_castps_si256(_mm256_cmp_ps::<_CMP_LT_OQ>(x, zero));
             let q = _mm256_sub_epi32(_mm256_xor_si256(m, neg), neg);
             st8i(&mut oc[i], q);
-            let zeros = _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(q, _mm256_setzero_si256())));
+            let zeros = _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(
+                q,
+                _mm256_setzero_si256(),
+            )));
             let bit = 8 * i;
             mask[bit / 64] |= ((!zeros & 0xff) as u64) << (bit % 64);
         }
@@ -229,7 +257,10 @@ pub(super) fn quantise_avx2(f: &[f32], n: usize, inv: &[f32; 64], ac_rounding: f
 #[target_feature(enable = "sse4.1")]
 fn samples4(v: __m128, out: Output) -> __m128i {
     let x = _mm_add_ps(_mm_mul_ps(v, _mm_set1_ps(out.scale)), _mm_set1_ps(out.bias));
-    let x = _mm_min_ps(_mm_max_ps(_mm_floor_ps(x), _mm_setzero_ps()), _mm_set1_ps(out.max));
+    let x = _mm_min_ps(
+        _mm_max_ps(_mm_floor_ps(x), _mm_setzero_ps()),
+        _mm_set1_ps(out.max),
+    );
     _mm_cvttps_epi32(x)
 }
 

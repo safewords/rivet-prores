@@ -9,14 +9,26 @@ use prores::{AlphaType, ChromaFormat, Decoder, Error, FrameHeader, Interlace};
 fn bits(s: &str) -> Vec<u8> {
     let b: Vec<u8> = s.bytes().filter(|c| *c != b' ').map(|c| c - b'0').collect();
     b.chunks(8)
-        .map(|c| c.iter().enumerate().fold(0u8, |acc, (i, &bit)| acc | (bit << (7 - i))))
+        .map(|c| {
+            c.iter()
+                .enumerate()
+                .fold(0u8, |acc, (i, &bit)| acc | (bit << (7 - i)))
+        })
         .collect()
 }
 
 /// A frame header (§5.1.1) of `extra` more bytes than the 20 the syntax
 /// needs (a version variant's informative data, which a decoder must skip
 /// by `frame_header_size`).
-fn frame_header(w: u16, h: u16, chroma: u8, interlace: u8, alpha: u8, version: u8, extra: usize) -> Vec<u8> {
+fn frame_header(
+    w: u16,
+    h: u16,
+    chroma: u8,
+    interlace: u8,
+    alpha: u8,
+    version: u8,
+    extra: usize,
+) -> Vec<u8> {
     let mut v = Vec::new();
     v.extend_from_slice(&((20 + extra) as u16).to_be_bytes());
     v.push(0); // reserved
@@ -112,13 +124,21 @@ fn sample(v: f64) -> u16 {
 fn a_hand_coded_macroblock_decodes_to_the_hand_computed_samples() {
     let (y, cb, cr) = one_macroblock();
     let s = slice(1, &y, &cb, &cr, 1);
-    let data = frame(&frame_header(16, 16, 2, 0, 0, 0, 4), &[picture(0, &[s])], 5, 7);
+    let data = frame(
+        &frame_header(16, 16, 2, 0, 0, 0, 4),
+        &[picture(0, &[s])],
+        5,
+        7,
+    );
 
     let hdr = FrameHeader::parse(&data).unwrap();
     assert_eq!(hdr.header_size, 24);
     assert_eq!(hdr.frame_size as usize, data.len() - 7);
     assert_eq!(&hdr.encoder_identifier, b"hand");
-    assert_eq!((hdr.width, hdr.height, hdr.chroma, hdr.interlace), (16, 16, ChromaFormat::Yuv422, Interlace::Progressive));
+    assert_eq!(
+        (hdr.width, hdr.height, hdr.chroma, hdr.interlace),
+        (16, 16, ChromaFormat::Yuv422, Interlace::Progressive)
+    );
     assert_eq!(hdr.metadata.aspect_ratio, 1);
     assert_eq!(hdr.metadata.frame_rate(), Some((25, 1)));
     assert_eq!(hdr.alpha, AlphaType::None);
@@ -136,7 +156,8 @@ fn a_hand_coded_macroblock_decodes_to_the_hand_computed_samples() {
                     // F00 = 32, and F[0][1] = 50 at (v, u) = (0, 1): the
                     // progressive scan's index 1.
                     let x = (col - 8) as f64;
-                    let ac = 50.0 / (4.0 * 2f64.sqrt()) * ((2.0 * x + 1.0) * std::f64::consts::PI / 16.0).cos();
+                    let ac = 50.0 / (4.0 * 2f64.sqrt())
+                        * ((2.0 * x + 1.0) * std::f64::consts::PI / 16.0).cos();
                     sample(4.0 + ac)
                 }
                 (0, 1) => sample(-4.0),
@@ -166,13 +187,35 @@ fn field_pictures_are_woven_by_interlace_mode() {
     for (mode, first_row) in [(1u8, 0usize), (2, 1)] {
         let first = picture(0, &[slice(1, &y_hi, &flat_chroma, &flat_chroma, 0)]);
         let second = picture(0, &[slice(1, &y_lo, &flat_chroma, &flat_chroma, 0)]);
-        let data = frame(&frame_header(16, 2, 2, mode, 0, 0, 0), &[first, second], 0, 0);
+        let data = frame(
+            &frame_header(16, 2, 2, mode, 0, 0, 0),
+            &[first, second],
+            0,
+            0,
+        );
         let f = Decoder::new().decode(&data).unwrap();
-        assert_eq!(f.interlace, if mode == 1 { Interlace::TopFieldFirst } else { Interlace::BottomFieldFirst });
+        assert_eq!(
+            f.interlace,
+            if mode == 1 {
+                Interlace::TopFieldFirst
+            } else {
+                Interlace::BottomFieldFirst
+            }
+        );
         let y = f.plane(0);
-        assert!(y[first_row * 16..first_row * 16 + 16].iter().all(|&s| s == sample(4.0)), "mode {mode}");
+        assert!(
+            y[first_row * 16..first_row * 16 + 16]
+                .iter()
+                .all(|&s| s == sample(4.0)),
+            "mode {mode}"
+        );
         let other = 1 - first_row;
-        assert!(y[other * 16..other * 16 + 16].iter().all(|&s| s == sample(-4.0)), "mode {mode}");
+        assert!(
+            y[other * 16..other * 16 + 16]
+                .iter()
+                .all(|&s| s == sample(-4.0)),
+            "mode {mode}"
+        );
     }
 }
 
@@ -196,7 +239,12 @@ fn hand_coded_alpha() {
         s.extend_from_slice(&flat4);
     }
     s.extend_from_slice(&alpha);
-    let data = frame(&frame_header(16, 16, 3, 0, 1, 1, 0), &[picture(3, &[s])], 0, 0);
+    let data = frame(
+        &frame_header(16, 16, 3, 0, 1, 1, 0),
+        &[picture(3, &[s])],
+        0,
+        0,
+    );
     let f = Decoder::with_bit_depth(8).unwrap().decode(&data).unwrap();
     let a = f.alpha.unwrap();
     assert!(a[..16].iter().all(|&v| v == 255));
@@ -208,7 +256,12 @@ fn hand_coded_alpha() {
 #[test]
 fn malformed_headers_are_errors() {
     let (y, cb, cr) = one_macroblock();
-    let good = frame(&frame_header(16, 16, 2, 0, 0, 0, 0), &[picture(0, &[slice(1, &y, &cb, &cr, 0)])], 0, 0);
+    let good = frame(
+        &frame_header(16, 16, 2, 0, 0, 0, 0),
+        &[picture(0, &[slice(1, &y, &cb, &cr, 0)])],
+        0,
+        0,
+    );
     assert!(Decoder::new().decode(&good).is_ok());
     let invalid = |d: &[u8]| matches!(Decoder::new().decode(d), Err(Error::Invalid(_)));
 
@@ -228,7 +281,10 @@ fn malformed_headers_are_errors() {
     assert!(invalid(&b));
     let mut b = good.clone();
     b[8 + 3] = 2; // bitstream_version 2
-    assert!(matches!(Decoder::new().decode(&b), Err(Error::Unsupported(_))));
+    assert!(matches!(
+        Decoder::new().decode(&b),
+        Err(Error::Unsupported(_))
+    ));
     let mut b = good.clone();
     b[8 + 20 + 8 + 2 + 1] = 0; // quantization_index 0: reserved
     assert!(invalid(&b));
@@ -242,10 +298,20 @@ fn malformed_headers_are_errors() {
     // A run past the end of the coefficient array: DCs 0, 0, 0, 0, then a
     // run of 300 (EG0: 300 + 1 = 100101101, eight 0s first).
     let y = bits("100000 1000 1 1 00000000 100101101 1 0");
-    let b = frame(&frame_header(16, 16, 2, 0, 0, 0, 0), &[picture(0, &[slice(1, &y, &cb, &cr, 0)])], 0, 0);
+    let b = frame(
+        &frame_header(16, 16, 2, 0, 0, 0, 0),
+        &[picture(0, &[slice(1, &y, &cb, &cr, 0)])],
+        0,
+        0,
+    );
     assert!(invalid(&b));
     // Coefficient data cut short mid-codeword.
     let y = bits("0000000000");
-    let b = frame(&frame_header(16, 16, 2, 0, 0, 0, 0), &[picture(0, &[slice(1, &y, &cb, &cr, 0)])], 0, 0);
+    let b = frame(
+        &frame_header(16, 16, 2, 0, 0, 0, 0),
+        &[picture(0, &[slice(1, &y, &cb, &cr, 0)])],
+        0,
+        0,
+    );
     assert!(invalid(&b));
 }

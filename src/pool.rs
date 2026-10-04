@@ -101,9 +101,14 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 fn pool() -> &'static Pool {
     static POOL: OnceLock<&'static Pool> = OnceLock::new();
     POOL.get_or_init(|| {
-        let pool: &'static Pool = Box::leak(Box::new(Pool { queue: Mutex::new(Vec::new()), work: Condvar::new() }));
+        let pool: &'static Pool = Box::leak(Box::new(Pool {
+            queue: Mutex::new(Vec::new()),
+            work: Condvar::new(),
+        }));
         for i in 0..parallelism().saturating_sub(1) {
-            let spawned = std::thread::Builder::new().name(format!("prores-{i}")).spawn(move || worker(pool));
+            let spawned = std::thread::Builder::new()
+                .name(format!("prores-{i}"))
+                .spawn(move || worker(pool));
             if spawned.is_err() {
                 break; // fewer workers; `run` still completes on its caller
             }
@@ -169,7 +174,8 @@ pub(crate) fn run(threads: usize, tasks: usize, size: TaskSize, f: &(dyn Fn(usiz
     // leaves the queue (under that lock) and this function then waits —
     // even when its own share of the tasks panicked — until every worker
     // that joined has left. So no use of `f` outlives this call.
-    let f: *const TaskFn = unsafe { std::mem::transmute::<*const (dyn Fn(usize) + Sync + '_), *const TaskFn>(f) };
+    let f: *const TaskFn =
+        unsafe { std::mem::transmute::<*const (dyn Fn(usize) + Sync + '_), *const TaskFn>(f) };
     let chunk = match size {
         TaskSize::Large => 1,
         // At least four claims per thread, at most 8 tasks each.
@@ -211,7 +217,10 @@ pub(crate) fn run(threads: usize, tasks: usize, size: TaskSize, f: &(dyn Fn(usiz
 pub(crate) fn prefault(threads: usize, buffers: &mut [&mut [u16]]) {
     const PAGE: usize = 2048;
     let total: usize = buffers.iter().map(|b| b.len()).sum();
-    let threads = resolve(threads).min(4).min(total.div_ceil(64 * PAGE)).max(1);
+    let threads = resolve(threads)
+        .min(4)
+        .min(total.div_ceil(64 * PAGE))
+        .max(1);
     let per = total.div_ceil(threads).next_multiple_of(PAGE);
     let mut parts: Vec<Mutex<Option<&mut [u16]>>> = Vec::new();
     for b in buffers.iter_mut() {
@@ -235,14 +244,30 @@ pub(crate) fn map<T: Send>(threads: usize, tasks: usize, f: impl Fn(usize) -> T 
 }
 
 /// [`map`] for many short tasks ([`TaskSize::Small`]).
-pub(crate) fn map_small<T: Send>(threads: usize, tasks: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+pub(crate) fn map_small<T: Send>(
+    threads: usize,
+    tasks: usize,
+    f: impl Fn(usize) -> T + Sync,
+) -> Vec<T> {
     map_sized(threads, tasks, TaskSize::Small, f)
 }
 
-fn map_sized<T: Send>(threads: usize, tasks: usize, size: TaskSize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+fn map_sized<T: Send>(
+    threads: usize,
+    tasks: usize,
+    size: TaskSize,
+    f: impl Fn(usize) -> T + Sync,
+) -> Vec<T> {
     let slots: Vec<Mutex<Option<T>>> = (0..tasks).map(|_| Mutex::new(None)).collect();
     run(threads, tasks, size, &|i| *lock(&slots[i]) = Some(f(i)));
-    slots.into_iter().map(|s| s.into_inner().unwrap_or_else(|e| e.into_inner()).expect("every task ran")).collect()
+    slots
+        .into_iter()
+        .map(|s| {
+            s.into_inner()
+                .unwrap_or_else(|e| e.into_inner())
+                .expect("every task ran")
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -252,13 +277,19 @@ mod tests {
     #[test]
     fn every_task_runs_once_at_any_thread_count() {
         for threads in [0, 1, 2, 3, 8, 64] {
-            for (tasks, size) in [0, 1, 2, 7, 100, 1000].into_iter().flat_map(|t| [(t, TaskSize::Large), (t, TaskSize::Small)]) {
+            for (tasks, size) in [0, 1, 2, 7, 100, 1000]
+                .into_iter()
+                .flat_map(|t| [(t, TaskSize::Large), (t, TaskSize::Small)])
+            {
                 let hits: Vec<AtomicUsize> = (0..tasks).map(|_| AtomicUsize::new(0)).collect();
                 run(threads, tasks, size, &|i| {
                     hits[i].fetch_add(1, Ordering::Relaxed);
                 });
                 assert!(hits.iter().all(|h| h.load(Ordering::Relaxed) == 1));
-                assert_eq!(map_sized(threads, tasks, size, |i| i * 3), (0..tasks).map(|i| i * 3).collect::<Vec<_>>());
+                assert_eq!(
+                    map_sized(threads, tasks, size, |i| i * 3),
+                    (0..tasks).map(|i| i * 3).collect::<Vec<_>>()
+                );
             }
         }
     }

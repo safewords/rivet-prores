@@ -154,16 +154,24 @@ pub(crate) fn quantise(
         Isa::Scalar => scalar::quantise(f, n, inv, ac_rounding, out, mask),
         #[cfg(target_arch = "x86_64")]
         // SAFETY: see `idct_put`; the lengths were checked above.
-        Isa::Sse41 if n.is_multiple_of(4) => unsafe { x86::quantise_sse41(f, n, inv, ac_rounding, out, mask) },
+        Isa::Sse41 if n.is_multiple_of(4) => unsafe {
+            x86::quantise_sse41(f, n, inv, ac_rounding, out, mask)
+        },
         #[cfg(target_arch = "x86_64")]
         // SAFETY: as above.
-        Isa::Avx2 if n.is_multiple_of(8) => unsafe { x86::quantise_avx2(f, n, inv, ac_rounding, out, mask) },
+        Isa::Avx2 if n.is_multiple_of(8) => unsafe {
+            x86::quantise_avx2(f, n, inv, ac_rounding, out, mask)
+        },
         #[cfg(target_arch = "x86_64")]
         // SAFETY: as above.
-        Isa::Avx2 if n.is_multiple_of(4) => unsafe { x86::quantise_sse41(f, n, inv, ac_rounding, out, mask) },
+        Isa::Avx2 if n.is_multiple_of(4) => unsafe {
+            x86::quantise_sse41(f, n, inv, ac_rounding, out, mask)
+        },
         #[cfg(target_arch = "aarch64")]
         // SAFETY: as above.
-        Isa::Neon if n.is_multiple_of(4) => unsafe { neon::quantise(f, n, inv, ac_rounding, out, mask) },
+        Isa::Neon if n.is_multiple_of(4) => unsafe {
+            neon::quantise(f, n, inv, ac_rounding, out, mask)
+        },
         #[allow(unreachable_patterns)]
         _ => scalar::quantise(f, n, inv, ac_rounding, out, mask),
     }
@@ -195,10 +203,17 @@ mod tests {
         eprintln!("SIMD levels: {avail:?}; in use: {:?}", Isa::get());
         if std::env::var_os("PRORES_REQUIRE_SIMD").is_some_and(|v| v == "1") {
             #[cfg(target_arch = "x86_64")]
-            assert!(avail.contains(&Isa::Sse41) && avail.contains(&Isa::Avx2), "{avail:?}");
+            assert!(
+                avail.contains(&Isa::Sse41) && avail.contains(&Isa::Avx2),
+                "{avail:?}"
+            );
             #[cfg(target_arch = "aarch64")]
             assert!(avail.contains(&Isa::Neon), "{avail:?}");
-            assert_ne!(Isa::get(), Isa::Scalar, "PRORES_REQUIRE_SIMD with PRORES_FORCE_SCALAR");
+            assert_ne!(
+                Isa::get(),
+                Isa::Scalar,
+                "PRORES_REQUIRE_SIMD with PRORES_FORCE_SCALAR"
+            );
         }
     }
 
@@ -231,7 +246,11 @@ mod tests {
             let out = Output::new(depth);
             let want = scalar::idct_put(&coef, &scale, out);
             for isa in Isa::available() {
-                assert_eq!(idct_put(isa, &coef, &scale, out), want, "{isa:?} case {case}");
+                assert_eq!(
+                    idct_put(isa, &coef, &scale, out),
+                    want,
+                    "{isa:?} case {case}"
+                );
             }
         }
     }
@@ -251,7 +270,11 @@ mod tests {
             let want = scalar::fdct_load(&pix, scale);
             for isa in Isa::available() {
                 let got = fdct_load(isa, &pix, scale);
-                assert_eq!(got.map(f32::to_bits), want.map(f32::to_bits), "{isa:?} case {case}");
+                assert_eq!(
+                    got.map(f32::to_bits),
+                    want.map(f32::to_bits),
+                    "{isa:?} case {case}"
+                );
             }
         }
     }
@@ -301,8 +324,9 @@ mod tests {
             let out = Output::new(10);
             let f: [f32; 64] = std::array::from_fn(|k| coef[k] as f32 * scale[k]);
             let v = crate::dct::idct(&f);
-            let want: [u16; 64] =
-                std::array::from_fn(|k| (v[k] * out.scale + out.bias).floor().clamp(0.0, out.max) as u16);
+            let want: [u16; 64] = std::array::from_fn(|k| {
+                (v[k] * out.scale + out.bias).floor().clamp(0.0, out.max) as u16
+            });
             assert_eq!(scalar::idct_put(&coef, &scale, out), want);
         }
     }

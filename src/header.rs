@@ -81,14 +81,20 @@ impl FrameHeader {
     /// header fits in the frame.
     pub fn parse(data: &[u8]) -> Result<FrameHeader> {
         if data.len() < 8 + FRAME_HEADER_FIXED {
-            return Err(invalid(format!("{} bytes is too short for a ProRes frame header", data.len())));
+            return Err(invalid(format!(
+                "{} bytes is too short for a ProRes frame header",
+                data.len()
+            )));
         }
         let frame_size = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
         if data[4..8] != FRAME_IDENTIFIER {
             return Err(invalid("no 'icpf' frame identifier"));
         }
         if (frame_size as usize) > data.len() {
-            return Err(invalid(format!("frame_size {frame_size} exceeds the {} bytes given", data.len())));
+            return Err(invalid(format!(
+                "frame_size {frame_size} exceeds the {} bytes given",
+                data.len()
+            )));
         }
         if (frame_size as usize) < 8 + FRAME_HEADER_FIXED {
             return Err(invalid("frame_size leaves no room for the frame header"));
@@ -96,12 +102,16 @@ impl FrameHeader {
         let h = &data[8..frame_size as usize];
         let header_size = u16::from_be_bytes([h[0], h[1]]);
         if (header_size as usize) < FRAME_HEADER_FIXED || header_size as usize > h.len() {
-            return Err(invalid(format!("frame_header_size {header_size} is out of range")));
+            return Err(invalid(format!(
+                "frame_header_size {header_size} is out of range"
+            )));
         }
         let h = &h[..header_size as usize];
         let bitstream_version = h[3];
         if bitstream_version > 1 {
-            return Err(unsupported(format!("bitstream_version {bitstream_version}")));
+            return Err(unsupported(format!(
+                "bitstream_version {bitstream_version}"
+            )));
         }
         let encoder_identifier = [h[4], h[5], h[6], h[7]];
         let width = u16::from_be_bytes([h[8], h[9]]);
@@ -111,7 +121,8 @@ impl FrameHeader {
         }
         let chroma = ChromaFormat::from_code(h[12] >> 6)
             .ok_or_else(|| invalid(format!("chroma_format {} is reserved", h[12] >> 6)))?;
-        let interlace = Interlace::from_code((h[12] >> 2) & 3).ok_or_else(|| invalid("interlace_mode 3 is reserved"))?;
+        let interlace = Interlace::from_code((h[12] >> 2) & 3)
+            .ok_or_else(|| invalid("interlace_mode 3 is reserved"))?;
         let metadata = Metadata {
             aspect_ratio: h[13] >> 4,
             frame_rate_code: h[13] & 15,
@@ -200,7 +211,11 @@ impl FrameHeader {
 
     /// Pictures in the frame: 1 progressive, 2 interlaced.
     pub fn picture_count(&self) -> usize {
-        if self.interlace == Interlace::Progressive { 1 } else { 2 }
+        if self.interlace == Interlace::Progressive {
+            1
+        } else {
+            2
+        }
     }
 
     /// `picture_vertical_size` of picture `index` (0 first, 1 second, §6.2).
@@ -209,7 +224,11 @@ impl FrameHeader {
         match self.interlace {
             Interlace::Progressive => v,
             mode => {
-                if self.is_top_field(index, mode) { v.div_ceil(2) } else { v / 2 }
+                if self.is_top_field(index, mode) {
+                    v.div_ceil(2)
+                } else {
+                    v / 2
+                }
             }
         }
     }
@@ -225,7 +244,11 @@ impl FrameHeader {
         match self.interlace {
             Interlace::Progressive => (0, 1),
             mode => {
-                if self.is_top_field(index, mode) { (0, 2) } else { (1, 2) }
+                if self.is_top_field(index, mode) {
+                    (0, 2)
+                } else {
+                    (1, 2)
+                }
             }
         }
     }
@@ -250,15 +273,28 @@ impl PictureHeader {
         let header_size = (data[0] >> 3) as usize;
         let picture_size = u32::from_be_bytes([data[1], data[2], data[3], data[4]]) as usize;
         if header_size < PICTURE_HEADER_SIZE || header_size > data.len() {
-            return Err(invalid(format!("picture_header_size {header_size} is out of range")));
+            return Err(invalid(format!(
+                "picture_header_size {header_size} is out of range"
+            )));
         }
         if picture_size < header_size || picture_size > data.len() {
-            return Err(invalid(format!("picture_size {picture_size} is out of range")));
+            return Err(invalid(format!(
+                "picture_size {picture_size} is out of range"
+            )));
         }
-        Ok(PictureHeader { header_size, picture_size, log2_slice_mbs: ((data[7] >> 4) & 3) as u32 })
+        Ok(PictureHeader {
+            header_size,
+            picture_size,
+            log2_slice_mbs: ((data[7] >> 4) & 3) as u32,
+        })
     }
 
-    pub(crate) fn write(out: &mut Vec<u8>, picture_size: u32, slice_count: usize, log2_slice_mbs: u32) {
+    pub(crate) fn write(
+        out: &mut Vec<u8>,
+        picture_size: u32,
+        slice_count: usize,
+        log2_slice_mbs: u32,
+    ) {
         out.push((PICTURE_HEADER_SIZE as u8) << 3);
         out.extend_from_slice(&picture_size.to_be_bytes());
         // deprecated_number_of_slices: the count when it fits, else 0.

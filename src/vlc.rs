@@ -138,7 +138,10 @@ impl Codebook {
         if n < threshold {
             // q zeros, a 1, k_rice bits.
             let q = (n >> k_rice) as u32;
-            return Some(((1u64 << k_rice) | (n & ((1u64 << k_rice) - 1)), q + 1 + k_rice));
+            return Some((
+                (1u64 << k_rice) | (n & ((1u64 << k_rice) - 1)),
+                q + 1 + k_rice,
+            ));
         }
         // last_q + 1 zeros, then exp-Golomb of order k_exp.
         let v = n - threshold + (1u64 << k_exp);
@@ -230,13 +233,21 @@ impl Codebook {
 /// §7.1.1.2 S(n): 0, -1, 1, -2, 2, … ↦ 0, 1, 2, 3, 4, …
 #[inline]
 pub(crate) fn signed_to_symbol(n: i32) -> u32 {
-    if n >= 0 { 2 * n as u32 } else { 2 * n.unsigned_abs() - 1 }
+    if n >= 0 {
+        2 * n as u32
+    } else {
+        2 * n.unsigned_abs() - 1
+    }
 }
 
 /// The inverse of [`signed_to_symbol`].
 #[inline]
 pub(crate) fn symbol_to_signed(s: u32) -> i32 {
-    if s & 1 == 0 { (s >> 1) as i32 } else { -(s.div_ceil(2) as i32) }
+    if s & 1 == 0 {
+        (s >> 1) as i32
+    } else {
+        -(s.div_ceil(2) as i32)
+    }
 }
 
 /// Table 12: alpha run lengths 1..=2048.
@@ -334,7 +345,11 @@ static LEVEL_DECODE: [[u16; 1 << DECODE_BITS]; 9] = decode_table(LEVEL_CODEBOOKS
 pub(crate) fn peek_run(prev_run: u32, w: u64) -> Option<(u32, u32)> {
     let c = (prev_run as usize).min(15);
     let e = RUN_DECODE[c][(w >> (64 - DECODE_BITS)) as usize];
-    if e != 0 { Some(((e >> 5) as u32, (e & 31) as u32)) } else { RUN_CODEBOOKS[c].peek(w) }
+    if e != 0 {
+        Some(((e >> 5) as u32, (e & 31) as u32))
+    } else {
+        RUN_CODEBOOKS[c].peek(w)
+    }
 }
 
 /// The level symbol after a level symbol `prev`, decoded from `w` as for
@@ -343,7 +358,11 @@ pub(crate) fn peek_run(prev_run: u32, w: u64) -> Option<(u32, u32)> {
 pub(crate) fn peek_level(prev: u32, w: u64) -> Option<(u32, u32)> {
     let c = (prev as usize).min(8);
     let e = LEVEL_DECODE[c][(w >> (64 - DECODE_BITS)) as usize];
-    if e != 0 { Some(((e >> 5) as u32, (e & 31) as u32)) } else { LEVEL_CODEBOOKS[c].peek(w) }
+    if e != 0 {
+        Some(((e >> 5) as u32, (e & 31) as u32))
+    } else {
+        LEVEL_CODEBOOKS[c].peek(w)
+    }
 }
 
 /// Symbols below this have their codewords in [`RUN_CODES`] and
@@ -377,14 +396,22 @@ static LEVEL_CODES: [[u32; CODE_TABLE]; 9] = code_table(LEVEL_CODEBOOKS);
 #[inline]
 pub(crate) fn run_len(prev_run: u32, run: u32) -> u32 {
     let c = (prev_run as usize).min(15);
-    if (run as usize) < CODE_TABLE { RUN_CODES[c][run as usize] & 31 } else { RUN_CODEBOOKS[c].len(run) }
+    if (run as usize) < CODE_TABLE {
+        RUN_CODES[c][run as usize] & 31
+    } else {
+        RUN_CODEBOOKS[c].len(run)
+    }
 }
 
 /// Bits of the level codeword for `symbol` after a level symbol `prev`.
 #[inline]
 pub(crate) fn level_len(prev: u32, symbol: u32) -> u32 {
     let c = (prev as usize).min(8);
-    if (symbol as usize) < CODE_TABLE { LEVEL_CODES[c][symbol as usize] & 31 } else { LEVEL_CODEBOOKS[c].len(symbol) }
+    if (symbol as usize) < CODE_TABLE {
+        LEVEL_CODES[c][symbol as usize] & 31
+    } else {
+        LEVEL_CODEBOOKS[c].len(symbol)
+    }
 }
 
 /// The run codeword for `run` after a run of `prev_run`, as `(bits,
@@ -432,7 +459,9 @@ mod tests {
     #[test]
     fn exp_golomb_order_0_and_1_by_hand() {
         // §7.1.1.1: q = floor(log2(n + 2^k)) - k zeros, then n + 2^k.
-        let eg0 = ["1", "010", "011", "00100", "00101", "00110", "00111", "0001000"];
+        let eg0 = [
+            "1", "010", "011", "00100", "00101", "00110", "00111", "0001000",
+        ];
         for (n, want) in eg0.iter().enumerate() {
             assert_eq!(codeword(ExpGolomb(0), n as u32), *want, "EG0({n})");
         }
@@ -479,7 +508,9 @@ mod tests {
         books.extend(RUN_CODEBOOKS);
         books.extend(LEVEL_CODEBOOKS);
         books.push(FIRST_DC_CODEBOOK);
-        let values: Vec<u32> = (0..3000).chain([65535, 1 << 20, (1 << 24) + 7, MAX_SYMBOL]).collect();
+        let values: Vec<u32> = (0..3000)
+            .chain([65535, 1 << 20, (1 << 24) + 7, MAX_SYMBOL])
+            .collect();
         for cb in books {
             let mut v = Vec::new();
             let mut w = BitWriter::new(&mut v);
@@ -507,7 +538,9 @@ mod tests {
         books.extend(RUN_CODEBOOKS);
         books.extend(LEVEL_CODEBOOKS);
         books.push(FIRST_DC_CODEBOOK);
-        let values: Vec<u32> = (0..3000).chain([65535, 1 << 20, (1 << 24) + 7, MAX_SYMBOL]).collect();
+        let values: Vec<u32> = (0..3000)
+            .chain([65535, 1 << 20, (1 << 24) + 7, MAX_SYMBOL])
+            .collect();
         for cb in books {
             for &n in &values {
                 for junk in [0u64, !0, 0x5555_5555_5555_5555] {
@@ -559,8 +592,16 @@ mod tests {
             for p in 0..1u64 << 12 {
                 for tail in [0u64, !0 >> 12, 0x0123_4567_89ab_cdef >> 12] {
                     let w = (p << 52) | tail;
-                    assert_eq!(peek_run(prev, w), run_codebook(prev).peek(w), "{prev} {w:x}");
-                    assert_eq!(peek_level(prev, w), level_codebook(prev).peek(w), "{prev} {w:x}");
+                    assert_eq!(
+                        peek_run(prev, w),
+                        run_codebook(prev).peek(w),
+                        "{prev} {w:x}"
+                    );
+                    assert_eq!(
+                        peek_level(prev, w),
+                        level_codebook(prev).peek(w),
+                        "{prev} {w:x}"
+                    );
                 }
             }
         }
@@ -625,18 +666,34 @@ mod tests {
 
     #[test]
     fn alpha_differences_are_tables_13_and_14() {
-        let t13 = [(1, "00000"), (-1, "00001"), (2, "00010"), (-2, "00011"), (8, "01110"), (-8, "01111")];
+        let t13 = [
+            (1, "00000"),
+            (-1, "00001"),
+            (2, "00010"),
+            (-2, "00011"),
+            (8, "01110"),
+            (-8, "01111"),
+        ];
         for (d, want) in t13 {
             assert_eq!(bits_of(|w| put_alpha_difference(w, d, 8)), want);
         }
         assert_eq!(bits_of(|w| put_alpha_difference(w, 9, 8)), "100001001");
         assert_eq!(bits_of(|w| put_alpha_difference(w, -9, 8)), "111110111");
         assert_eq!(bits_of(|w| put_alpha_difference(w, 0, 8)), "100000000");
-        let t14 = [(1, "00000000"), (-1, "00000001"), (2, "00000010"), (64, "01111110"), (-64, "01111111")];
+        let t14 = [
+            (1, "00000000"),
+            (-1, "00000001"),
+            (2, "00000010"),
+            (64, "01111110"),
+            (-64, "01111111"),
+        ];
         for (d, want) in t14 {
             assert_eq!(bits_of(|w| put_alpha_difference(w, d, 16)), want);
         }
-        assert_eq!(bits_of(|w| put_alpha_difference(w, 65, 16)), "10000000001000001");
+        assert_eq!(
+            bits_of(|w| put_alpha_difference(w, 65, 16)),
+            "10000000001000001"
+        );
         for bits in [8, 16] {
             for d in -300..300 {
                 let mut v = Vec::new();

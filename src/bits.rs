@@ -147,7 +147,12 @@ pub(crate) struct BitWriter<'a> {
 impl<'a> BitWriter<'a> {
     pub(crate) fn new(out: &'a mut Vec<u8>) -> Self {
         let start = out.len();
-        BitWriter { out, start, acc: 0, nacc: 0 }
+        BitWriter {
+            out,
+            start,
+            acc: 0,
+            nacc: 0,
+        }
     }
 
     /// Byte-aligns with `0` bits and returns the bytes written.

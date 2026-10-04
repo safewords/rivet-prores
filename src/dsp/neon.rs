@@ -77,7 +77,10 @@ fn halves_mut<T>(a: &mut [T; 8]) -> (&mut [T; 4], &mut [T; 4]) {
 #[target_feature(enable = "neon")]
 fn samples4(v: float32x4_t, out: Output) -> uint32x4_t {
     let x = vaddq_f32(vmulq_f32(v, vdupq_n_f32(out.scale)), vdupq_n_f32(out.bias));
-    let x = vminq_f32(vmaxq_f32(vrndmq_f32(x), vdupq_n_f32(0.0)), vdupq_n_f32(out.max));
+    let x = vminq_f32(
+        vmaxq_f32(vrndmq_f32(x), vdupq_n_f32(0.0)),
+        vdupq_n_f32(out.max),
+    );
     vcvtq_u32_f32(x)
 }
 
@@ -116,7 +119,10 @@ pub(super) fn idct_put(coef: &[i32; 64], scale: &[f32; 64], out: Output) -> [u16
             a1 = vaddq_f32(a1, vmulq_f32(w, tmp[v].1));
         }
         // The values are already clamped to 0..=65535: narrowing is exact.
-        st8w(row, vcombine_u16(vmovn_u32(samples4(a0, out)), vmovn_u32(samples4(a1, out))));
+        st8w(
+            row,
+            vcombine_u16(vmovn_u32(samples4(a0, out)), vmovn_u32(samples4(a1, out))),
+        );
     }
     res
 }
@@ -165,7 +171,14 @@ pub(super) fn fdct_load(pix: &[u16; 64], scale: f32) -> [f32; 64] {
 }
 
 #[target_feature(enable = "neon")]
-pub(super) fn quantise(f: &[f32], n: usize, inv: &[f32; 64], ac_rounding: f32, out: &mut [i32], mask: &mut [u64]) {
+pub(super) fn quantise(
+    f: &[f32],
+    n: usize,
+    inv: &[f32; 64],
+    ac_rounding: f32,
+    out: &mut [i32],
+    mask: &mut [u64],
+) {
     mask.fill(0);
     let zero = vdupq_n_f32(0.0);
     let lanes: uint32x4_t = {

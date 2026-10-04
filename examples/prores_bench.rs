@@ -18,7 +18,14 @@
 use prores::{AlphaType, ChromaFormat, Config, Decoder, Encoder, Frame, Profile};
 use std::time::Instant;
 
-fn picture(width: u32, height: u32, chroma: ChromaFormat, depth: u32, seed: u32, alpha: bool) -> Frame {
+fn picture(
+    width: u32,
+    height: u32,
+    chroma: ChromaFormat,
+    depth: u32,
+    seed: u32,
+    alpha: bool,
+) -> Frame {
     let mut f = Frame::new(width, height, chroma, depth).unwrap();
     let mut rng = seed | 1;
     let mut noise = |a: i32| {
@@ -31,14 +38,22 @@ fn picture(width: u32, height: u32, chroma: ChromaFormat, depth: u32, seed: u32,
     let phase = seed as f64 * 0.37;
     for plane in 0..3 {
         let p = f.planes[plane];
-        let xs = if plane == 0 { 1.0 } else { chroma.subsampling().0 as f64 };
+        let xs = if plane == 0 {
+            1.0
+        } else {
+            chroma.subsampling().0 as f64
+        };
         let (w, h) = (width as f64, height as f64);
         let data = f.plane_mut(plane);
         for y in 0..p.height as usize {
             for x in 0..p.width as usize {
                 let (fx, fy) = (x as f64 * xs, y as f64);
                 let mut v = match plane {
-                    0 => 200.0 + 500.0 * fx / w + 120.0 * (fx / 37.0 + phase).sin() * (fy / 23.0).cos(),
+                    0 => {
+                        200.0
+                            + 500.0 * fx / w
+                            + 120.0 * (fx / 37.0 + phase).sin() * (fy / 23.0).cos()
+                    }
                     1 => 512.0 + 150.0 * (fx / w - 0.5) + 60.0 * (fy / 50.0 + phase).sin(),
                     _ => 512.0 - 120.0 * (fy / h - 0.5) + 50.0 * (fx / 70.0).cos(),
                 };
@@ -50,7 +65,11 @@ fn picture(width: u32, height: u32, chroma: ChromaFormat, depth: u32, seed: u32,
                 }
                 v += noise(6) as f64;
                 let v = v.clamp(64.0, 940.0);
-                let s = if shift >= 0 { v * (1 << shift) as f64 } else { v / (1 << -shift) as f64 };
+                let s = if shift >= 0 {
+                    v * (1 << shift) as f64
+                } else {
+                    v / (1 << -shift) as f64
+                };
                 data[y * p.width as usize + x] = s.round() as u16;
             }
         }
@@ -122,7 +141,9 @@ fn main() {
         "4444a" => (Profile::P4444, ChromaFormat::Yuv444, 12, true),
         _ => panic!("kind: hq or 4444a"),
     };
-    let frames: Vec<Frame> = (0..4).map(|s| picture(w, h, chroma, depth, 1 + s, alpha)).collect();
+    let frames: Vec<Frame> = (0..4)
+        .map(|s| picture(w, h, chroma, depth, 1 + s, alpha))
+        .collect();
     let mut config = Config::new(profile);
     config.alpha = AlphaType::Bits16;
     config.threads = threads; // THREADS-API

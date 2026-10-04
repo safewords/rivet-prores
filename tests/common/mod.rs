@@ -23,13 +23,24 @@ impl Rng {
 /// A picture with what makes real pictures hard and easy: smooth gradients,
 /// hard-edged shapes, fine periodic detail, and grain. Values stay inside
 /// the video range (64–940 at 10 bits, scaled for other depths).
-pub fn test_frame(width: u32, height: u32, chroma: ChromaFormat, bit_depth: u32, grain: i32, seed: u32) -> Frame {
+pub fn test_frame(
+    width: u32,
+    height: u32,
+    chroma: ChromaFormat,
+    bit_depth: u32,
+    grain: i32,
+    seed: u32,
+) -> Frame {
     let mut f = Frame::new(width, height, chroma, bit_depth).unwrap();
     let mut rng = Rng(seed | 1);
     let shift = bit_depth as i32 - 10;
     let scale = |v: f64| -> u16 {
         let v = v.clamp(64.0, 940.0);
-        let s = if shift >= 0 { v * (1 << shift) as f64 } else { v / (1 << -shift) as f64 };
+        let s = if shift >= 0 {
+            v * (1 << shift) as f64
+        } else {
+            v / (1 << -shift) as f64
+        };
         s.round() as u16
     };
     for plane in 0..3 {
@@ -76,9 +87,18 @@ pub fn psnr(a: &Frame, b: &Frame, plane: usize) -> f64 {
 
 pub fn psnr_samples(a: &[u16], b: &[u16], bit_depth: u32) -> f64 {
     assert_eq!(a.len(), b.len());
-    let mse: f64 = a.iter().zip(b).map(|(&x, &y)| (x as f64 - y as f64).powi(2)).sum::<f64>() / a.len() as f64;
+    let mse: f64 = a
+        .iter()
+        .zip(b)
+        .map(|(&x, &y)| (x as f64 - y as f64).powi(2))
+        .sum::<f64>()
+        / a.len() as f64;
     let peak = ((1u32 << bit_depth) - 1) as f64;
-    if mse == 0.0 { f64::INFINITY } else { 10.0 * (peak * peak / mse).log10() }
+    if mse == 0.0 {
+        f64::INFINITY
+    } else {
+        10.0 * (peak * peak / mse).log10()
+    }
 }
 
 /// Combined PSNR over all three planes, weighted by sample count.
