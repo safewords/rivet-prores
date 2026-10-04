@@ -261,9 +261,11 @@ impl Frame {
     /// The packed planes as little-endian bytes — the memory layout of
     /// `yuv422p10le`, `yuv444p12le` and the like.
     pub fn to_le_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.data.len() * 2);
-        for s in &self.data {
-            out.extend_from_slice(&s.to_le_bytes());
+        let mut out = vec![0u8; self.data.len() * 2];
+        // Fixed-size pairs: a plain copy on little-endian targets, which the
+        // compiler vectorises.
+        for (d, s) in out.as_chunks_mut::<2>().0.iter_mut().zip(&self.data) {
+            *d = s.to_le_bytes();
         }
         out
     }
@@ -301,6 +303,16 @@ impl Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn le_bytes_are_the_samples_low_byte_first() {
+        let mut f = Frame::new(5, 3, ChromaFormat::Yuv422, 16).unwrap();
+        for (i, s) in f.data.iter_mut().enumerate() {
+            *s = (i as u16).wrapping_mul(40503);
+        }
+        let want: Vec<u8> = f.data.iter().flat_map(|s| [*s as u8, (*s >> 8) as u8]).collect();
+        assert_eq!(f.to_le_bytes(), want);
+    }
 
     #[test]
     fn layout_rounds_chroma_width_up() {
