@@ -34,6 +34,9 @@
 
 #![warn(missing_docs)]
 
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub mod bench_api;
 pub(crate) mod bits;
 pub(crate) mod dct;
 pub mod decode;

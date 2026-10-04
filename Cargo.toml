@@ -25,3 +25,9 @@ proptest = { version = "1", default-features = false, features = ["std"] }
 
 [features]
 default = []
+# Exposes per-kernel timings for `examples/kernels.rs`; not an API.
+bench = []
+
+[[example]]
+name = "kernels"
+required-features = ["bench"]
