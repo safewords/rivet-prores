@@ -287,6 +287,65 @@ pub(crate) fn read_alpha_difference(r: &mut BitReader, bits: u32) -> Result<(i32
     Ok((if neg { -a } else { a }, false))
 }
 
+/// Codewords up to this long are decoded by table lookup on the next
+/// `DECODE_BITS` bits.
+const DECODE_BITS: u32 = 9;
+
+/// For every context and every `DECODE_BITS`-bit prefix: `(symbol << 5) |
+/// length` of the codeword it starts with, or 0 when that codeword is
+/// longer than `DECODE_BITS`.
+const fn decode_table<const N: usize>(books: [Codebook; N]) -> [[u16; 1 << DECODE_BITS]; N] {
+    let mut t = [[0u16; 1 << DECODE_BITS]; N];
+    let mut c = 0;
+    while c < N {
+        // Every codeword of every symbol short enough, written into the
+        // prefixes that start with it.
+        let mut n = 0u32;
+        loop {
+            let len = books[c].len(n);
+            if len <= DECODE_BITS {
+                let (bits, _) = match books[c].code(n) {
+                    Some(code) => code,
+                    None => panic!("short codewords have codes"),
+                };
+                let first = (bits as usize) << (DECODE_BITS - len);
+                let mut p = 0;
+                while p < 1 << (DECODE_BITS - len) {
+                    t[c][first + p] = ((n << 5) | len) as u16;
+                    p += 1;
+                }
+            } else if n > 1 << DECODE_BITS {
+                break; // lengths only grow from here
+            }
+            n += 1;
+        }
+        c += 1;
+    }
+    t
+}
+
+static RUN_DECODE: [[u16; 1 << DECODE_BITS]; 16] = decode_table(RUN_CODEBOOKS);
+static LEVEL_DECODE: [[u16; 1 << DECODE_BITS]; 9] = decode_table(LEVEL_CODEBOOKS);
+
+/// The run after a run of `prev_run`, decoded from `w` (the next bits,
+/// MSB-aligned, the first 57 real): `(run, length)`, or `None` as for
+/// [`Codebook::peek`].
+#[inline(always)]
+pub(crate) fn peek_run(prev_run: u32, w: u64) -> Option<(u32, u32)> {
+    let c = (prev_run as usize).min(15);
+    let e = RUN_DECODE[c][(w >> (64 - DECODE_BITS)) as usize];
+    if e != 0 { Some(((e >> 5) as u32, (e & 31) as u32)) } else { RUN_CODEBOOKS[c].peek(w) }
+}
+
+/// The level symbol after a level symbol `prev`, decoded from `w` as for
+/// [`peek_run`].
+#[inline(always)]
+pub(crate) fn peek_level(prev: u32, w: u64) -> Option<(u32, u32)> {
+    let c = (prev as usize).min(8);
+    let e = LEVEL_DECODE[c][(w >> (64 - DECODE_BITS)) as usize];
+    if e != 0 { Some(((e >> 5) as u32, (e & 31) as u32)) } else { LEVEL_CODEBOOKS[c].peek(w) }
+}
+
 /// Symbols below this have their codewords in [`RUN_CODES`] and
 /// [`LEVEL_CODES`], which the encoder writes and counts with.
 const CODE_TABLE: usize = 32;
@@ -488,6 +547,20 @@ mod tests {
                         assert_eq!(bits_of(|w| w.put(bits, len)), codeword(cb, n), "{cb:?} {n}");
                     }
                     None => assert!(cb.len(n) > 57 && n >= 1 << 20, "{cb:?} {n}"),
+                }
+            }
+        }
+    }
+
+    /// The decode tables agree with `peek` on every window prefix.
+    #[test]
+    fn decode_tables_are_peek() {
+        for prev in 0..20 {
+            for p in 0..1u64 << 12 {
+                for tail in [0u64, !0 >> 12, 0x0123_4567_89ab_cdef >> 12] {
+                    let w = (p << 52) | tail;
+                    assert_eq!(peek_run(prev, w), run_codebook(prev).peek(w), "{prev} {w:x}");
+                    assert_eq!(peek_level(prev, w), level_codebook(prev).peek(w), "{prev} {w:x}");
                 }
             }
         }

@@ -421,8 +421,8 @@ fn decode_scanned(data: &[u8], n_blocks: usize, mut put: impl FnMut(usize, i32))
     loop {
         // Fast path: run, level and sign from one 64-bit window.
         if let Some(w) = r.peek_fast()
-            && let Some((run, l1)) = vlc::run_codebook(prev_run).peek(w)
-            && let Some((level_symbol, l2)) = vlc::level_codebook(prev_level).peek(w << l1)
+            && let Some((run, l1)) = vlc::peek_run(prev_run, w)
+            && let Some((level_symbol, l2)) = vlc::peek_level(prev_level, w << l1)
             && l1 + l2 < 57
         {
             n += run as usize;
