@@ -1,7 +1,7 @@
 //! Per-kernel timings at every SIMD level this CPU has (best of five).
 //!
 //! ```sh
-//! cargo run --release --features bench --example kernels
+//! cargo run --release --features bench --example prores_kernels
 //! ```
 
 use prores::bench_api as b;

@@ -1,4 +1,4 @@
-//! Per-kernel timings for `examples/kernels.rs`: not part of the API.
+//! Per-kernel timings for `examples/prores_kernels.rs`: not part of the API.
 //!
 //! Each function runs one kernel `iters` times on realistic data (blocks
 //! of the integration tests' kind of picture, transformed and quantised at

@@ -89,8 +89,8 @@ jobs:
       # thread count: one hash for all four.
       - name: Same pictures at every SIMD level and thread count
         run: |
-          cargo build --release --example bench
-          b=target/release/examples/bench
+          cargo build --release --example prores_bench
+          b=target/release/examples/prores_bench
           s="$RUNNER_TEMP/prores-sample.mov"
           {
             $b file "$s" 1

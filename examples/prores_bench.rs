@@ -4,8 +4,8 @@
 //! or commits can be checked for identical bytes.
 //!
 //! ```sh
-//! cargo run --release --example bench -- [720p|1080p] [hq|4444a] [threads] [runs]
-//! cargo run --release --example bench -- file <frames.mov> [threads]
+//! cargo run --release --example prores_bench -- [720p|1080p] [hq|4444a] [threads] [runs]
+//! cargo run --release --example prores_bench -- file <frames.mov> [threads]
 //! ```
 //!
 //! `file` decodes every ProRes frame in a file (found by `'icpf'`, without

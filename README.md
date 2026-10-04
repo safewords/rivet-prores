@@ -118,7 +118,7 @@ the scalar code; CI runs the tests both ways on x86-64 (aarch64 by hand,
 see "NEON on ARM hardware").
 
 Frames per second on a Ryzen 9 9950X (16 cores, 32 threads), synthetic
-pictures with grain (`examples/bench.rs`), measured 2026-10-04 (32-thread
+pictures with grain (`examples/prores_bench.rs`), measured 2026-10-04 (32-thread
 column 2026-10-05, at about 12 % background load); "before" is the
 single-threaded scalar code of 64544da, whose output is byte-for-byte the
 same. More threads never cost speed: a new picture's pages are faulted in on
@@ -138,8 +138,8 @@ at a time:
 | 4444 + 16-bit alpha 1920×1080, decode | 14 | 46 | 534 |
 
 ```sh
-cargo run --release --example bench -- 1080p hq 0 5     # size, hq|4444a, threads, runs
-cargo run --release --features bench --example kernels  # each kernel at each SIMD level
+cargo run --release --example prores_bench -- 1080p hq 0 5     # size, hq|4444a, threads, runs
+cargo run --release --features bench --example prores_kernels  # each kernel at each SIMD level
 ```
 
 ## How it is checked
