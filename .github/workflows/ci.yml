@@ -15,20 +15,35 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # The SIMD kernels (src/dsp) are checked bit-exact against the scalar
+      # ones on every host: SSE4.1 and AVX2 on x86-64, NEON on arm64.
+      # PRORES_REQUIRE_SIMD makes a missing level a failure, not a skipped
+      # comparison; PRORES_FORCE_SCALAR runs everything else on the scalar
+      # kernels too.
       matrix:
         include:
-          - { name: linux x86-64,   os: ubuntu-latest }
-          - { name: linux arm64,    os: ubuntu-24.04-arm }
-          - { name: windows x86-64, os: windows-latest }
-          - { name: macos arm64,    os: macos-latest }
+          - { name: linux x86-64 (SSE4.1/AVX2), os: ubuntu-latest }
+          - { name: linux arm64 (NEON),         os: ubuntu-24.04-arm }
+          - { name: windows x86-64 (SSE4.1/AVX2), os: windows-latest }
+          - { name: macos arm64 (NEON),         os: macos-latest }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Tests
+      - name: Build (lib, examples, benchmarks)
+        run: cargo build --release --examples --features bench
+      - name: Tests (SIMD)
         run: cargo test --release
+        env:
+          PRORES_REQUIRE_SIMD: "1"
+      - name: Tests (scalar kernels forced)
+        run: cargo test --release
+        env:
+          PRORES_FORCE_SCALAR: "1"
       - name: Property tests with overflow checks (debug)
         run: cargo test --test fuzz
+      - name: Unit tests with overflow checks (debug)
+        run: cargo test --lib
 
   # The decoder on frames Apple's encoder wrote: the first 4 MB of a public
   # sample (eleven whole frames), fetched here rather than committed. The
@@ -48,6 +63,25 @@ jobs:
         run: cargo test --release --test sample -- --nocapture
         env:
           PRORES_SAMPLE: ${{ runner.temp }}/prores-sample.mov
+      - name: Tests (scalar kernels forced)
+        run: cargo test --release --test sample -- --nocapture
+        env:
+          PRORES_SAMPLE: ${{ runner.temp }}/prores-sample.mov
+          PRORES_FORCE_SCALAR: "1"
+      # The decoded pictures must not depend on the SIMD level or the
+      # thread count: one hash for all four.
+      - name: Same pictures at every SIMD level and thread count
+        run: |
+          cargo build --release --example bench
+          b=target/release/examples/bench
+          s="$RUNNER_TEMP/prores-sample.mov"
+          {
+            $b file "$s" 1
+            $b file "$s" 0
+            PRORES_FORCE_SCALAR=1 $b file "$s" 1
+            PRORES_FORCE_SCALAR=1 $b file "$s" 0
+          } | tee hashes.txt
+          test "$(cut -d' ' -f5 hashes.txt | sort -u | wc -l)" = 1
 
   msrv:
     name: MSRV (1.99)
@@ -66,8 +100,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+          targets: aarch64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: clippy for aarch64 (the NEON kernels)
+        run: cargo clippy --all-targets --all-features --target aarch64-unknown-linux-gnu -- -D warnings
       - run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
